@@ -5,10 +5,10 @@ import numpy as np
 import os
 import cv2
 from numpy import genfromtxt
-from keras.layers import Conv2D, ZeroPadding2D, Activation, Input, concatenate
-from keras.models import Model
-from keras.layers.normalization import BatchNormalization
-from keras.layers.pooling import MaxPooling2D, AveragePooling2D
+from tensorflow.keras.layers import Conv2D, ZeroPadding2D, Activation, Input, concatenate
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import BatchNormalization
+from tensorflow.keras.layers import MaxPooling2D, AveragePooling2D
 import h5py
 import matplotlib.pyplot as plt
 
@@ -47,16 +47,16 @@ def conv2d_bn(x,
               cv2_strides=(1, 1),
               padding=None):
     num = '' if cv2_out == None else '1'
-    tensor = Conv2D(cv1_out, cv1_filter, strides=cv1_strides, data_format='channels_first', name=layer+'_conv'+num)(x)
-    tensor = BatchNormalization(axis=1, epsilon=0.00001, name=layer+'_bn'+num)(tensor)
+    tensor = Conv2D(cv1_out, cv1_filter, strides=cv1_strides, name=layer+'_conv'+num)(x)
+    tensor = BatchNormalization(axis=3, epsilon=0.00001, name=layer+'_bn'+num)(tensor)
     tensor = Activation('relu')(tensor)
     if padding == None:
         return tensor
-    tensor = ZeroPadding2D(padding=padding, data_format='channels_first')(tensor)
+    tensor = ZeroPadding2D(padding=padding)(tensor)
     if cv2_out == None:
         return tensor
-    tensor = Conv2D(cv2_out, cv2_filter, strides=cv2_strides, data_format='channels_first', name=layer+'_conv'+'2')(tensor)
-    tensor = BatchNormalization(axis=1, epsilon=0.00001, name=layer+'_bn'+'2')(tensor)
+    tensor = Conv2D(cv2_out, cv2_filter, strides=cv2_strides, name=layer+'_conv'+'2')(tensor)
+    tensor = BatchNormalization(axis=3, epsilon=0.00001, name=layer+'_bn'+'2')(tensor)
     tensor = Activation('relu')(tensor)
     return tensor
 
@@ -109,7 +109,7 @@ conv_shape = {
   'inception_3c_5x5_conv2': [64, 32, 5, 5],
   'inception_4a_3x3_conv1': [96, 640, 1, 1],
   'inception_4a_3x3_conv2': [192, 96, 3, 3],
-  'inception_4a_5x5_conv1': [32, 640, 1, 1,],
+  'inception_4a_5x5_conv1': [32, 640, 1, 1],
   'inception_4a_5x5_conv2': [64, 32, 5, 5],
   'inception_4a_pool_conv': [128, 640, 1, 1],
   'inception_4a_1x1_conv': [256, 640, 1, 1],
@@ -131,17 +131,17 @@ def load_weights_from_FaceNet(FRmodel):
     # Load weights from csv files (which was exported from Openface torch model)
     weights = WEIGHTS
     weights_dict = load_weights()
-
+ 
     # Set layer weights of the model
     for name in weights:
         if FRmodel.get_layer(name) != None:
             FRmodel.get_layer(name).set_weights(weights_dict[name])
-        elif model.get_layer(name) != None:
-            model.get_layer(name).set_weights(weights_dict[name])
+        else:
+            continue
 
 def load_weights():
     # Set weights path
-    dirPath = './weights'
+    dirPath = os.path.join(os.path.dirname(__file__), 'weights')
     fileNames = filter(lambda f: not f.startswith('.'), os.listdir(dirPath))
     paths = {}
     weights_dict = {}
@@ -173,11 +173,12 @@ def load_weights():
 
 
 def load_dataset():
-    train_dataset = h5py.File('datasets/train_happy.h5', "r")
+    datasets_dir = os.path.join(os.path.dirname(__file__), 'datasets')
+    train_dataset = h5py.File(os.path.join(datasets_dir, 'train_happy.h5'), "r")
     train_set_x_orig = np.array(train_dataset["train_set_x"][:]) # your train set features
     train_set_y_orig = np.array(train_dataset["train_set_y"][:]) # your train set labels
-
-    test_dataset = h5py.File('datasets/test_happy.h5', "r")
+ 
+    test_dataset = h5py.File(os.path.join(datasets_dir, 'test_happy.h5'), "r")
     test_set_x_orig = np.array(test_dataset["test_set_x"][:]) # your test set features
     test_set_y_orig = np.array(test_dataset["test_set_y"][:]) # your test set labels
 
@@ -191,7 +192,8 @@ def load_dataset():
 def img_to_encoding(image_path, model):
     img1 = cv2.imread(image_path, 1)
     img = img1[...,::-1]
-    img = np.around(np.transpose(img, (2,0,1))/255.0, decimals=12)
+    img = cv2.resize(img, (96, 96), interpolation=cv2.INTER_AREA)
+    img = np.around(img/255.0, decimals=12)
     x_train = np.array([img])
     embedding = model.predict_on_batch(x_train)
     return embedding

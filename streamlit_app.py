@@ -1,13 +1,14 @@
 import os
 import sys
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
 import streamlit as st
 import tensorflow as tf
 from tensorflow.keras import backend as K
+from mtcnn.mtcnn import MTCNN
 
 CURRENT_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(CURRENT_DIR))
@@ -16,14 +17,65 @@ from inception_blocks_v2 import faceRecoModel
 from fr_utils import load_weights_from_FaceNet
 
 
-def _preprocess_bgr_image(img_bgr: np.ndarray) -> np.ndarray:
+def _largest_face_box(boxes: List[Dict[str, Any]]) -> Optional[Tuple[int, int, int, int]]:
+    if not boxes:
+        return None
+
+    best = None
+    best_area = -1
+    for b in boxes:
+        x, y, w, h = b.get("box", (0, 0, 0, 0))
+        area = int(w) * int(h)
+        if area > best_area:
+            best_area = area
+            best = (int(x), int(y), int(w), int(h))
+    return best
+
+
+def _crop_with_margin(img_rgb: np.ndarray, box: Tuple[int, int, int, int], margin_ratio: float) -> np.ndarray:
+    h_img, w_img = img_rgb.shape[:2]
+    x, y, w, h = box
+
+    mx = int(w * margin_ratio)
+    my = int(h * margin_ratio)
+
+    x1 = max(0, x - mx)
+    y1 = max(0, y - my)
+    x2 = min(w_img, x + w + mx)
+    y2 = min(h_img, y + h + my)
+
+    if x2 <= x1 or y2 <= y1:
+        return img_rgb
+
+    return img_rgb[y1:y2, x1:x2]
+
+
+@st.cache_resource
+def get_mtcnn_detector() -> MTCNN:
+    return MTCNN()
+
+
+def _preprocess_bgr_image(
+    img_bgr: np.ndarray,
+    use_detection: bool,
+    margin_ratio: float,
+) -> Tuple[np.ndarray, np.ndarray]:
     if img_bgr is None:
         raise ValueError("Could not decode image")
 
     img_rgb = img_bgr[..., ::-1]
-    img_rgb = cv2.resize(img_rgb, (96, 96), interpolation=cv2.INTER_AREA)
-    img = np.around(img_rgb / 255.0, decimals=12)
-    return img
+    cropped_rgb = img_rgb
+
+    if use_detection:
+        detector = get_mtcnn_detector()
+        faces = detector.detect_faces(img_rgb)
+        box = _largest_face_box(faces)
+        if box is not None:
+            cropped_rgb = _crop_with_margin(img_rgb, box, margin_ratio)
+
+    resized = cv2.resize(cropped_rgb, (96, 96), interpolation=cv2.INTER_AREA)
+    img = np.around(resized / 255.0, decimals=12)
+    return img, cropped_rgb
 
 
 def _embedding_from_preprocessed(img_hwc: np.ndarray, model: tf.keras.Model) -> np.ndarray:
@@ -32,16 +84,21 @@ def _embedding_from_preprocessed(img_hwc: np.ndarray, model: tf.keras.Model) -> 
     return emb
 
 
-def embedding_from_bytes(image_bytes: bytes, model: tf.keras.Model) -> np.ndarray:
+def embedding_from_bytes(
+    image_bytes: bytes,
+    model: tf.keras.Model,
+    use_detection: bool,
+    margin_ratio: float,
+) -> Tuple[np.ndarray, np.ndarray]:
     arr = np.frombuffer(image_bytes, dtype=np.uint8)
     img_bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    img = _preprocess_bgr_image(img_bgr)
-    return _embedding_from_preprocessed(img, model)
+    img, cropped_rgb = _preprocess_bgr_image(img_bgr, use_detection=use_detection, margin_ratio=margin_ratio)
+    return _embedding_from_preprocessed(img, model), cropped_rgb
 
 
 def embedding_from_path(image_path: Path, model: tf.keras.Model) -> np.ndarray:
     img_bgr = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
-    img = _preprocess_bgr_image(img_bgr)
+    img, _cropped_rgb = _preprocess_bgr_image(img_bgr, use_detection=True, margin_ratio=0.2)
     return _embedding_from_preprocessed(img, model)
 
 
@@ -99,6 +156,8 @@ def main() -> None:
 
     mode = st.sidebar.selectbox("Mode", ["Verify", "Identify"], index=0)
     threshold = st.sidebar.slider("Threshold", min_value=0.0, max_value=2.0, value=0.7, step=0.01)
+    use_detection = st.sidebar.checkbox("Use MTCNN face detection", value=True)
+    margin_ratio = st.sidebar.slider("Face crop margin", min_value=0.0, max_value=0.6, value=0.2, step=0.05)
 
     selected_identity = None
     if mode == "Verify":
@@ -121,10 +180,18 @@ def main() -> None:
     model = get_facenet_model()
 
     try:
-        query_emb = embedding_from_bytes(uploaded.getvalue(), model)
+        query_emb, cropped_rgb = embedding_from_bytes(
+            uploaded.getvalue(),
+            model,
+            use_detection=use_detection,
+            margin_ratio=margin_ratio,
+        )
     except Exception as e:
         st.error(f"Failed to process uploaded image: {e}")
         return
+
+    if use_detection:
+        st.image(cropped_rgb, caption="Detected/cropped face", use_container_width=True)
 
     if mode == "Verify":
         if selected_identity is None:

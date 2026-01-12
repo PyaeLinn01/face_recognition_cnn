@@ -103,6 +103,14 @@ def _align_face_by_keypoints(img_rgb: np.ndarray, keypoints: Dict[str, Any], out
     return aligned
 
 
+def _resize_to_96(img_rgb: np.ndarray) -> np.ndarray:
+    h, w = img_rgb.shape[:2]
+    if (w, h) == (96, 96):
+        return img_rgb
+    interpolation = cv2.INTER_AREA if (w > 96 or h > 96) else cv2.INTER_CUBIC
+    return cv2.resize(img_rgb, (96, 96), interpolation=interpolation)
+
+
 @st.cache_resource
 def get_mtcnn_detector() -> MTCNN:
     return MTCNN()
@@ -139,7 +147,7 @@ def _preprocess_bgr_image(
                 if aligned is not None:
                     preview_rgb = aligned
 
-    resized = cv2.resize(preview_rgb, (96, 96), interpolation=cv2.INTER_AREA)
+    resized = _resize_to_96(preview_rgb)
     img = resized.astype(np.float32) / 255.0
     if use_prewhitening:
         img = _prewhiten(img)

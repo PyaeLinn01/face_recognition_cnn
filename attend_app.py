@@ -2,7 +2,7 @@ import csv
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -18,61 +18,133 @@ from app import (
 
 IMAGES_ROOT = CURRENT_DIR / "images"
 ATTENDANCE_CSV = CURRENT_DIR / "attendance.csv"
+TARGET_SIZE = (96, 96)
 
 
 def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def _save_camera_image(image_bytes: bytes, save_path: Path) -> None:
-    """Decode, detect face with MTCNN, crop, resize to 96x96, then save."""
-    from mtcnn.mtcnn import MTCNN  # local import to keep startup light
+@st.cache_resource
+def _get_mtcnn() -> "MTCNN":
+    from mtcnn.mtcnn import MTCNN
 
-    arr = np.frombuffer(image_bytes, dtype=np.uint8)
-    img_bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    if img_bgr is None:
-        raise ValueError("Failed to decode camera image")
+    return MTCNN()
 
-    # Face detection (similar to resize_images.py)
-    detector = MTCNN()
-    img_rgb = img_bgr[..., ::-1]
-    faces = detector.detect_faces(img_rgb)
 
-    # Pick best face by confidence * area
+def _draw_rounded_rect(
+    img_bgr: np.ndarray,
+    x1: int,
+    y1: int,
+    x2: int,
+    y2: int,
+    color: Tuple[int, int, int] = (0, 255, 0),
+    thickness: int = 2,
+    radius: int = 12,
+) -> None:
+    """Draw a rounded rectangle (in-place) on BGR image."""
+    x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+    r = max(0, int(radius))
+
+    # Clamp radius to box size
+    r = min(r, abs(x2 - x1) // 2, abs(y2 - y1) // 2)
+    if r <= 0:
+        cv2.rectangle(img_bgr, (x1, y1), (x2, y2), color, thickness)
+        return
+
+    # Straight segments
+    cv2.line(img_bgr, (x1 + r, y1), (x2 - r, y1), color, thickness)
+    cv2.line(img_bgr, (x1 + r, y2), (x2 - r, y2), color, thickness)
+    cv2.line(img_bgr, (x1, y1 + r), (x1, y2 - r), color, thickness)
+    cv2.line(img_bgr, (x2, y1 + r), (x2, y2 - r), color, thickness)
+
+    # Corner arcs
+    cv2.ellipse(img_bgr, (x1 + r, y1 + r), (r, r), 180, 0, 90, color, thickness)
+    cv2.ellipse(img_bgr, (x2 - r, y1 + r), (r, r), 270, 0, 90, color, thickness)
+    cv2.ellipse(img_bgr, (x1 + r, y2 - r), (r, r), 90, 0, 90, color, thickness)
+    cv2.ellipse(img_bgr, (x2 - r, y2 - r), (r, r), 0, 0, 90, color, thickness)
+
+
+def _best_face_box(faces: List[dict], min_confidence: float) -> Optional[Tuple[int, int, int, int]]:
     best = None
     best_score = -1.0
     for f in faces:
         conf = float(f.get("confidence", 0.0))
+        if conf < min_confidence:
+            continue
         x, y, w, h = f.get("box", (0, 0, 0, 0))
         area = float(max(0, int(w)) * max(0, int(h)))
         score = conf * area
         if score > best_score:
             best_score = score
             best = (int(x), int(y), int(w), int(h))
+    return best
 
-    crop = img_bgr
-    margin_ratio = 0.20
-    if best is not None:
-        h_img, w_img = img_bgr.shape[:2]
-        x, y, w, h = best
-        mx = int(w * margin_ratio)
-        my = int(h * margin_ratio)
-        x1 = max(0, x - mx)
-        y1 = max(0, y - my)
-        x2 = min(w_img, x + w + mx)
-        y2 = min(h_img, y + h + my)
-        if x2 > x1 and y2 > y1:
-            crop = img_bgr[y1:y2, x1:x2]
 
-    # Center square crop
-    h, w = crop.shape[:2]
+def _crop_with_margin_bgr(img_bgr: np.ndarray, box: Tuple[int, int, int, int], margin_ratio: float) -> np.ndarray:
+    h_img, w_img = img_bgr.shape[:2]
+    x, y, w, h = box
+    mx = int(w * margin_ratio)
+    my = int(h * margin_ratio)
+    x1 = max(0, x - mx)
+    y1 = max(0, y - my)
+    x2 = min(w_img, x + w + mx)
+    y2 = min(h_img, y + h + my)
+    if x2 <= x1 or y2 <= y1:
+        return img_bgr
+    return img_bgr[y1:y2, x1:x2]
+
+
+def _center_square_crop(img_bgr: np.ndarray) -> np.ndarray:
+    h, w = img_bgr.shape[:2]
     side = min(h, w)
     y1 = (h - side) // 2
     x1 = (w - side) // 2
-    crop = crop[y1 : y1 + side, x1 : x1 + side]
+    return img_bgr[y1 : y1 + side, x1 : x1 + side]
 
-    # Resize to 96x96
-    crop = cv2.resize(crop, (96, 96), interpolation=cv2.INTER_AREA)
+
+def _prewhiten(img: np.ndarray) -> np.ndarray:
+    x = img.astype(np.float32)
+    mean = np.mean(x)
+    std = np.std(x)
+    std_adj = max(std, 1.0 / np.sqrt(x.size))
+    return (x - mean) / std_adj
+
+
+def _embedding_from_bgr_face(
+    face_bgr: np.ndarray,
+    model,
+    use_prewhitening: bool,
+) -> np.ndarray:
+    face = cv2.resize(face_bgr, TARGET_SIZE, interpolation=cv2.INTER_AREA)
+    img = face[..., ::-1].astype(np.float32) / 255.0  # RGB, 0..1
+    if use_prewhitening:
+        img = _prewhiten(img)
+    x = np.array([img])
+    emb = model.predict_on_batch(x)[0]
+    emb = emb / max(np.linalg.norm(emb), 1e-12)
+    return np.expand_dims(emb, axis=0)
+
+
+def _save_camera_image(image_bytes: bytes, save_path: Path) -> None:
+    """Decode, detect face with MTCNN, crop, resize to 96x96, then save."""
+    arr = np.frombuffer(image_bytes, dtype=np.uint8)
+    img_bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if img_bgr is None:
+        raise ValueError("Failed to decode camera image")
+
+    # Face detection (similar to resize_images.py)
+    detector = _get_mtcnn()
+    img_rgb = img_bgr[..., ::-1]
+    faces = detector.detect_faces(img_rgb)
+
+    crop = img_bgr
+    margin_ratio = 0.20
+    best = _best_face_box(faces, min_confidence=0.90)
+    if best is not None:
+        crop = _crop_with_margin_bgr(img_bgr, best, margin_ratio=margin_ratio)
+    crop = _center_square_crop(crop)
+    crop = cv2.resize(crop, TARGET_SIZE, interpolation=cv2.INTER_AREA)
 
     _ensure_dir(save_path.parent)
     cv2.imwrite(str(save_path), crop)
@@ -242,70 +314,149 @@ def _attendance_ui() -> None:
 
     entered_name = st.text_input("Person name (optional, for logging only)", "")
 
-    camera_image = st.camera_input("Camera – capture frame for verification")
-
     model = get_facenet_model()
 
-    if st.button("Verify & Record Attendance", disabled=(camera_image is None)):
-        if camera_image is None:
-            st.error("No image captured from camera.")
-            return
+    st.markdown("### Live camera (rounded detection box)")
+    st.caption("If live camera doesn’t load, install dependencies and restart Streamlit.")
 
-        try:
-            query_emb, preview_rgb = embedding_from_bytes(
-                camera_image.getvalue(),
-                model,
-                use_detection=use_detection,
-                require_detection=require_detection,
-                min_confidence=min_confidence,
-                margin_ratio=margin_ratio,
-                use_alignment=use_alignment,
-                use_prewhitening=use_prewhitening,
-                use_tta_flip=use_tta_flip,
-            )
-        except Exception as e:
-            st.error(f"Failed to process camera frame: {e}")
-            return
+    try:
+        from streamlit_webrtc import VideoProcessorBase, webrtc_streamer
+        import av
+    except Exception:
+        st.warning(
+            "Live camera requires `streamlit-webrtc`. "
+            "Run `pip install -r requirements.txt` and restart, or use the snapshot verifier below."
+        )
+        camera_image = st.camera_input("Camera – capture frame for verification")
 
-        if use_detection:
-            st.image(preview_rgb, caption="Detected / aligned face", use_container_width=True)
+        if st.button("Verify & Record Attendance (snapshot)", disabled=(camera_image is None)):
+            if camera_image is None:
+                st.error("No image captured from camera.")
+                return
 
-        best_name = None
-        best_dist = float("inf")
+            try:
+                query_emb, preview_rgb = embedding_from_bytes(
+                    camera_image.getvalue(),
+                    model,
+                    use_detection=use_detection,
+                    require_detection=require_detection,
+                    min_confidence=min_confidence,
+                    margin_ratio=margin_ratio,
+                    use_alignment=use_alignment,
+                    use_prewhitening=use_prewhitening,
+                    use_tta_flip=use_tta_flip,
+                )
+            except Exception as e:
+                st.error(f"Failed to process camera frame: {e}")
+                return
 
-        for identity, ref_emb in database.items():
-            dist = float(np.linalg.norm(query_emb - ref_emb))
-            if dist < best_dist:
-                best_dist = dist
-                best_name = identity
+            if use_detection:
+                st.image(preview_rgb, caption="Detected / aligned face", use_container_width=True)
 
-        if best_name is None:
-            st.error("Could not find any identity in database.")
-            return
+            best_name = None
+            best_dist = float("inf")
+            for identity, ref_emb in database.items():
+                dist = float(np.linalg.norm(query_emb - ref_emb))
+                if dist < best_dist:
+                    best_dist = dist
+                    best_name = identity
 
-        is_match = best_dist < threshold
+            if best_name is None:
+                st.error("Could not find any identity in database.")
+                return
 
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("Best match")
-            st.image(ref_paths[best_name], caption=best_name, use_container_width=True)
-        with col2:
-            st.subheader("Result")
-            st.write(
-                {
-                    "best_identity": best_name,
-                    "distance": best_dist,
-                    "threshold": threshold,
-                    "match": is_match,
-                }
-            )
+            is_match = best_dist < threshold
+            st.write({"best_identity": best_name, "distance": best_dist, "threshold": threshold, "match": is_match})
 
-        if is_match:
-            log_name = entered_name.strip() or best_name
-            _append_attendance_row(log_name, best_name, best_dist)
-            st.success(f"Attendance recorded for **{log_name}**.")
-        else:
-            st.warning("Face did not match any registered identity with the given threshold.")
+            if is_match:
+                log_name = entered_name.strip() or best_name
+                _append_attendance_row(log_name, best_name, best_dist)
+                st.success(f"Attendance recorded for **{log_name}**.")
+            else:
+                st.warning("Face did not match any registered identity with the given threshold.")
+    else:
+        # Live processor with rounded bounding boxes + continuous identity estimate.
+        class FaceAttendanceProcessor(VideoProcessorBase):
+            def __init__(self) -> None:
+                self.detector = _get_mtcnn()
+                self.frame_idx = 0
+                self.last_best: Optional[Tuple[str, float]] = None
+
+            def recv(self, frame: "av.VideoFrame") -> "av.VideoFrame":
+                self.frame_idx += 1
+                img_bgr = frame.to_ndarray(format="bgr24")
+
+                img_rgb = img_bgr[..., ::-1]
+                faces = self.detector.detect_faces(img_rgb)
+
+                # Draw all faces (rounded)
+                for f in faces:
+                    conf = float(f.get("confidence", 0.0))
+                    if conf < min_confidence:
+                        continue
+                    x, y, w, h = f.get("box", (0, 0, 0, 0))
+                    x1, y1 = max(0, int(x)), max(0, int(y))
+                    x2, y2 = max(0, int(x + w)), max(0, int(y + h))
+                    _draw_rounded_rect(img_bgr, x1, y1, x2, y2, color=(0, 255, 0), thickness=2, radius=14)
+
+                # For speed, run recognition only every few frames
+                if self.frame_idx % 6 == 0:
+                    best_box = _best_face_box(faces, min_confidence=min_confidence)
+                    if best_box is not None:
+                        face = _crop_with_margin_bgr(img_bgr, best_box, margin_ratio=margin_ratio)
+                        face = _center_square_crop(face)
+                        q = _embedding_from_bgr_face(face, model=model, use_prewhitening=use_prewhitening)
+
+                        best_name = None
+                        best_dist = float("inf")
+                        for identity, ref_emb in database.items():
+                            dist = float(np.linalg.norm(q - ref_emb))
+                            if dist < best_dist:
+                                best_dist = dist
+                                best_name = identity
+                        if best_name is not None:
+                            self.last_best = (best_name, float(best_dist))
+
+                # Overlay label
+                if self.last_best is not None:
+                    bn, bd = self.last_best
+                    is_match = bd < threshold
+                    label = f"{bn}  dist={bd:.3f}  {'MATCH' if is_match else 'NO MATCH'}"
+                    color = (0, 200, 0) if is_match else (0, 0, 255)
+                    cv2.putText(
+                        img_bgr,
+                        label,
+                        (12, 32),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.8,
+                        color,
+                        2,
+                        cv2.LINE_AA,
+                    )
+
+                return av.VideoFrame.from_ndarray(img_bgr, format="bgr24")
+
+        ctx = webrtc_streamer(
+            key="attendance-live",
+            video_processor_factory=FaceAttendanceProcessor,
+            media_stream_constraints={"video": True, "audio": False},
+        )
+
+        col_a, col_b = st.columns(2)
+        with col_a:
+            st.caption("When it shows MATCH, you can record attendance.")
+        with col_b:
+            if st.button("Record attendance (from live match)"):
+                if ctx.video_processor is None or getattr(ctx.video_processor, "last_best", None) is None:
+                    st.error("No match data yet. Wait for the camera to detect a face.")
+                else:
+                    best_name, best_dist = ctx.video_processor.last_best
+                    if float(best_dist) < threshold:
+                        log_name = entered_name.strip() or best_name
+                        _append_attendance_row(log_name, best_name, float(best_dist))
+                        st.success(f"Attendance recorded for **{log_name}**.")
+                    else:
+                        st.warning("Current live frame is not a MATCH. Move closer / adjust lighting.")
 
     rows = _load_attendance_rows()
     if rows:

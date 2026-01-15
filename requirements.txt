@@ -7,3 +7,4 @@ h5py>=3.8
 tensorflow>=2.13,<2.16
 mtcnn>=0.1.1
 streamlit-webrtc>=0.47
+pymongo>=4.6

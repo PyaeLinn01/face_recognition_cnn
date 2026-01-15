@@ -15,14 +15,143 @@ from app import (
     load_reference_database,
 )
 
+try:
+    from pymongo import MongoClient
+    from pymongo.errors import ConnectionFailure, ServerSelectionTimeoutError
+    from bson.binary import Binary
+    MONGODB_AVAILABLE = True
+except ImportError:
+    MONGODB_AVAILABLE = False
+
 
 IMAGES_ROOT = CURRENT_DIR / "images"
 ATTENDANCE_CSV = CURRENT_DIR / "attendance.csv"
 TARGET_SIZE = (96, 96)
+MONGODB_COLLECTION_NAME = "face_images"
+MONGODB_ATTENDANCE_COLLECTION_NAME = "attendance"
 
 
 def _ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
+
+
+@st.cache_resource
+def _get_mongodb_client(connection_string: str):
+    """Get MongoDB client (cached)."""
+    if not MONGODB_AVAILABLE:
+        raise ImportError("pymongo not installed. Run: pip install pymongo")
+    try:
+        client = MongoClient(connection_string, serverSelectionTimeoutMS=5000)
+        # Test connection
+        client.admin.command("ping")
+        return client
+    except (ConnectionFailure, ServerSelectionTimeoutError) as e:
+        raise ConnectionError(f"Failed to connect to MongoDB: {e}")
+
+
+def _get_mongodb_collection(connection_string: str, database_name: str, collection_name: str = MONGODB_COLLECTION_NAME):
+    """Get MongoDB collection."""
+    client = _get_mongodb_client(connection_string)
+    db = client[database_name]
+    return db[collection_name]
+
+
+def _save_image_to_mongodb(
+    image_bytes: bytes,
+    name: str,
+    image_index: int,
+    connection_string: str,
+    database_name: str,
+) -> bool:
+    """Save processed 96x96 image to MongoDB."""
+    if not MONGODB_AVAILABLE:
+        return False
+    
+    try:
+        collection = _get_mongodb_collection(connection_string, database_name)
+        doc = {
+            "name": name,
+            "image_index": image_index,
+            "image_bytes": Binary(image_bytes),
+            "created_at": datetime.now(),
+            "size": TARGET_SIZE,
+        }
+        collection.insert_one(doc)
+        return True
+    except Exception as e:
+        st.error(f"MongoDB save error: {e}")
+        return False
+
+
+def _load_images_from_mongodb(
+    connection_string: str,
+    database_name: str,
+) -> Dict[str, List[bytes]]:
+    """Load all images from MongoDB, grouped by name."""
+    if not MONGODB_AVAILABLE:
+        return {}
+    
+    try:
+        collection = _get_mongodb_collection(connection_string, database_name)
+        images_by_name: Dict[str, List[bytes]] = {}
+        
+        for doc in collection.find().sort("name", 1).sort("image_index", 1):
+            name = doc.get("name", "")
+            img_bytes = doc.get("image_bytes")
+            if name and img_bytes:
+                if name not in images_by_name:
+                    images_by_name[name] = []
+                images_by_name[name].append(bytes(img_bytes))
+        
+        return images_by_name
+    except Exception as e:
+        st.error(f"MongoDB load error: {e}")
+        return {}
+
+
+def _build_reference_db_from_mongodb(
+    connection_string: str,
+    database_name: str,
+    use_prewhitening: bool,
+) -> Tuple[Dict[str, np.ndarray], Dict[str, str]]:
+    """Build reference database from MongoDB images."""
+    model = get_facenet_model()
+    images_by_name = _load_images_from_mongodb(connection_string, database_name)
+    
+    if not images_by_name:
+        raise RuntimeError("No images found in MongoDB")
+    
+    db: Dict[str, np.ndarray] = {}
+    ref_paths: Dict[str, str] = {}
+    per_identity: Dict[str, List[np.ndarray]] = {}
+    
+    for name, image_bytes_list in images_by_name.items():
+        for img_bytes in image_bytes_list:
+            # Decode image bytes to BGR
+            arr = np.frombuffer(img_bytes, dtype=np.uint8)
+            img_bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+            if img_bgr is None:
+                continue
+            
+            # Image is already 96x96, just convert to RGB and normalize
+            img_rgb = img_bgr[..., ::-1].astype(np.float32) / 255.0
+            if use_prewhitening:
+                img_rgb = _prewhiten(img_rgb)
+            
+            x = np.array([img_rgb])
+            emb = model.predict_on_batch(x)[0]
+            emb = emb / max(np.linalg.norm(emb), 1e-12)
+            per_identity.setdefault(name, []).append(np.expand_dims(emb, axis=0))
+    
+    # Average embeddings per identity
+    for identity, embs in per_identity.items():
+        if embs:
+            mean_emb = np.mean(np.concatenate(embs, axis=0), axis=0)
+            mean_emb = mean_emb / max(np.linalg.norm(mean_emb), 1e-12)
+            db[identity] = np.expand_dims(mean_emb, axis=0)
+            ref_paths[identity] = f"MongoDB:{identity}"
+    
+    return db, ref_paths
 
 
 @st.cache_resource
@@ -126,8 +255,18 @@ def _embedding_from_bgr_face(
     return np.expand_dims(emb, axis=0)
 
 
-def _save_camera_image(image_bytes: bytes, save_path: Path) -> None:
-    """Decode, detect face with MTCNN, crop, resize to 96x96, then save."""
+def _save_camera_image(
+    image_bytes: bytes,
+    save_path: Optional[Path] = None,
+    mongodb_connection_string: Optional[str] = None,
+    mongodb_database_name: Optional[str] = None,
+    name: Optional[str] = None,
+    image_index: Optional[int] = None,
+) -> bytes:
+    """Decode, detect face with MTCNN, crop, resize to 96x96, then save.
+    
+    Returns: processed image bytes (96x96 JPEG)
+    """
     arr = np.frombuffer(image_bytes, dtype=np.uint8)
     img_bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img_bgr is None:
@@ -146,28 +285,154 @@ def _save_camera_image(image_bytes: bytes, save_path: Path) -> None:
     crop = _center_square_crop(crop)
     crop = cv2.resize(crop, TARGET_SIZE, interpolation=cv2.INTER_AREA)
 
-    _ensure_dir(save_path.parent)
-    cv2.imwrite(str(save_path), crop)
+    # Encode to JPEG bytes
+    _, processed_bytes = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    processed_bytes = processed_bytes.tobytes()
 
+    # Save to filesystem if path provided
+    if save_path is not None:
+        _ensure_dir(save_path.parent)
+        cv2.imwrite(str(save_path), crop)
 
-def _append_attendance_row(name: str, identity: str, distance: float) -> None:
-    _ensure_dir(ATTENDANCE_CSV.parent)
-    file_exists = ATTENDANCE_CSV.exists()
-    with ATTENDANCE_CSV.open("a", newline="") as f:
-        writer = csv.writer(f)
-        if not file_exists:
-            writer.writerow(["timestamp", "entered_name", "matched_identity", "distance"])
-        writer.writerow(
-            [
-                datetime.now().isoformat(timespec="seconds"),
-                name,
-                identity,
-                f"{distance:.4f}",
-            ]
+    # Save to MongoDB if connection provided
+    if mongodb_connection_string and mongodb_database_name and name is not None and image_index is not None:
+        _save_image_to_mongodb(
+            processed_bytes,
+            name,
+            image_index,
+            mongodb_connection_string,
+            mongodb_database_name,
         )
 
+    return processed_bytes
 
-def _load_attendance_rows(max_rows: int = 200) -> List[List[str]]:
+
+def _save_attendance_to_mongodb(
+    name: str,
+    identity: str,
+    distance: float,
+    connection_string: str,
+    database_name: str,
+) -> bool:
+    """Save attendance record to MongoDB."""
+    if not MONGODB_AVAILABLE:
+        return False
+    
+    try:
+        collection = _get_mongodb_collection(
+            connection_string,
+            database_name,
+            MONGODB_ATTENDANCE_COLLECTION_NAME,
+        )
+        doc = {
+            "timestamp": datetime.now(),
+            "entered_name": name,
+            "matched_identity": identity,
+            "distance": float(distance),
+        }
+        collection.insert_one(doc)
+        return True
+    except Exception as e:
+        st.error(f"MongoDB attendance save error: {e}")
+        return False
+
+
+def _load_attendance_from_mongodb(
+    connection_string: str,
+    database_name: str,
+    max_rows: int = 200,
+) -> List[List[str]]:
+    """Load attendance records from MongoDB."""
+    if not MONGODB_AVAILABLE:
+        return []
+    
+    try:
+        collection = _get_mongodb_collection(
+            connection_string,
+            database_name,
+            MONGODB_ATTENDANCE_COLLECTION_NAME,
+        )
+        
+        rows: List[List[str]] = []
+        rows.append(["timestamp", "entered_name", "matched_identity", "distance"])
+        
+        # Get most recent records
+        for doc in collection.find().sort("timestamp", -1).limit(max_rows):
+            timestamp = doc.get("timestamp", datetime.now())
+            if isinstance(timestamp, datetime):
+                timestamp_str = timestamp.isoformat(timespec="seconds")
+            else:
+                timestamp_str = str(timestamp)
+            
+            rows.append([
+                timestamp_str,
+                doc.get("entered_name", ""),
+                doc.get("matched_identity", ""),
+                f"{doc.get('distance', 0.0):.4f}",
+            ])
+        
+        return rows
+    except Exception as e:
+        st.error(f"MongoDB attendance load error: {e}")
+        return []
+
+
+def _append_attendance_row(
+    name: str,
+    identity: str,
+    distance: float,
+    use_mongodb: bool = False,
+    mongodb_connection_string: Optional[str] = None,
+    mongodb_database_name: Optional[str] = None,
+    also_save_csv: bool = True,
+) -> None:
+    """Save attendance record to CSV and/or MongoDB."""
+    # Save to MongoDB if enabled
+    if use_mongodb and mongodb_connection_string and mongodb_database_name:
+        _save_attendance_to_mongodb(
+            name,
+            identity,
+            distance,
+            mongodb_connection_string,
+            mongodb_database_name,
+        )
+    
+    # Save to CSV if enabled
+    if also_save_csv:
+        _ensure_dir(ATTENDANCE_CSV.parent)
+        file_exists = ATTENDANCE_CSV.exists()
+        with ATTENDANCE_CSV.open("a", newline="") as f:
+            writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow(["timestamp", "entered_name", "matched_identity", "distance"])
+            writer.writerow(
+                [
+                    datetime.now().isoformat(timespec="seconds"),
+                    name,
+                    identity,
+                    f"{distance:.4f}",
+                ]
+            )
+
+
+def _load_attendance_rows(
+    max_rows: int = 200,
+    use_mongodb: bool = False,
+    mongodb_connection_string: Optional[str] = None,
+    mongodb_database_name: Optional[str] = None,
+) -> List[List[str]]:
+    """Load attendance records from MongoDB or CSV."""
+    # Try MongoDB first if enabled
+    if use_mongodb and mongodb_connection_string and mongodb_database_name:
+        rows = _load_attendance_from_mongodb(
+            mongodb_connection_string,
+            mongodb_database_name,
+            max_rows=max_rows,
+        )
+        if rows:
+            return rows
+    
+    # Fallback to CSV
     if not ATTENDANCE_CSV.exists():
         return []
     rows: List[List[str]] = []
@@ -190,7 +455,23 @@ def _build_reference_db(
     use_alignment: bool,
     use_prewhitening: bool,
     use_tta_flip: bool,
+    use_mongodb: bool = False,
+    mongodb_connection_string: Optional[str] = None,
+    mongodb_database_name: Optional[str] = None,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, str]]:
+    """Build reference database from filesystem or MongoDB."""
+    if use_mongodb and mongodb_connection_string and mongodb_database_name:
+        try:
+            return _build_reference_db_from_mongodb(
+                mongodb_connection_string,
+                mongodb_database_name,
+                use_prewhitening=use_prewhitening,
+            )
+        except Exception as e:
+            st.warning(f"MongoDB load failed, falling back to filesystem: {e}")
+            # Fall through to filesystem
+    
+    # Filesystem fallback
     if not IMAGES_ROOT.exists():
         raise FileNotFoundError(f"Missing images folder: {IMAGES_ROOT}")
 
@@ -222,10 +503,52 @@ def _register_face_ui() -> None:
     st.subheader("Register / Enroll Face")
     st.markdown(
         "Capture **4 images** of the same person from slightly different angles.\n"
-        "They will be saved under `images/&lt;name&gt;/` and used as reference anchors."
+        "They will be saved to MongoDB (and optionally to filesystem) and used as reference anchors."
     )
 
-    name = st.text_input("Person name (used as folder name)", "")
+    # MongoDB settings
+    st.sidebar.markdown("### MongoDB Settings")
+    use_mongodb = st.sidebar.checkbox("Use MongoDB", value=True)
+    
+    mongodb_connection_string = None
+    mongodb_database_name = None
+    
+    if use_mongodb:
+        if not MONGODB_AVAILABLE:
+            st.sidebar.error("pymongo not installed. Run: pip install pymongo")
+        else:
+            # Try to get from secrets first
+            try:
+                secrets = st.secrets.get("mongodb", {})
+                default_conn = secrets.get("connection_string", "mongodb://localhost:27017/")
+                default_db = secrets.get("database_name", "face_attendance")
+            except Exception:
+                default_conn = "mongodb://localhost:27017/"
+                default_db = "face_attendance"
+            
+            mongodb_connection_string = st.sidebar.text_input(
+                "MongoDB Connection String",
+                value=default_conn,
+                type="default",
+                help="e.g., mongodb://localhost:27017/ or mongodb+srv://user:pass@cluster.mongodb.net/",
+            )
+            mongodb_database_name = st.sidebar.text_input(
+                "Database Name",
+                value=default_db,
+                help="Database name to store face images",
+            )
+            
+            if mongodb_connection_string and mongodb_database_name:
+                try:
+                    _get_mongodb_client(mongodb_connection_string)
+                    st.sidebar.success("✓ MongoDB connected")
+                except Exception as e:
+                    st.sidebar.error(f"MongoDB connection failed: {e}")
+
+    # Also save to filesystem option
+    save_to_filesystem = st.sidebar.checkbox("Also save to filesystem", value=False)
+
+    name = st.text_input("Person name (used as folder/collection key)", "")
     # Fixed to exactly 4 snapshots
     num_images = 4
 
@@ -254,20 +577,35 @@ def _register_face_ui() -> None:
             st.error("Please enter a name before saving.")
             return
 
-        identity_dir = IMAGES_ROOT / name
-        _ensure_dir(identity_dir)
-
         count = st.session_state.captured_count
-        filename = f"{name}_{count + 1}.jpg"
-        save_path = identity_dir / filename
+        save_path = None
+        if save_to_filesystem:
+            identity_dir = IMAGES_ROOT / name
+            _ensure_dir(identity_dir)
+            filename = f"{name}_{count + 1}.jpg"
+            save_path = identity_dir / filename
+
         try:
-            _save_camera_image(camera_image.getvalue(), save_path)
+            _save_camera_image(
+                camera_image.getvalue(),
+                save_path=save_path,
+                mongodb_connection_string=mongodb_connection_string if use_mongodb else None,
+                mongodb_database_name=mongodb_database_name if use_mongodb else None,
+                name=name if use_mongodb else None,
+                image_index=count + 1 if use_mongodb else None,
+            )
         except Exception as e:
             st.error(f"Failed to save snapshot: {e}")
             return
 
         st.session_state.captured_count = count + 1
-        st.success(f"Saved snapshot #{st.session_state.captured_count} to `{save_path}`")
+        
+        success_msg = f"Saved snapshot #{st.session_state.captured_count}"
+        if save_to_filesystem and save_path:
+            success_msg += f" to `{save_path}`"
+        if use_mongodb and mongodb_connection_string:
+            success_msg += f" and MongoDB ({mongodb_database_name})"
+        st.success(success_msg)
 
         if st.session_state.captured_count >= num_images:
             st.balloons()
@@ -282,9 +620,50 @@ def _attendance_ui() -> None:
 
     st.markdown(
         "This mode uses the camera to verify a face against all registered identities "
-        "in the `images/` folder and records attendance."
+        "from MongoDB (or filesystem) and records attendance."
     )
 
+    # MongoDB settings
+    st.sidebar.markdown("### Data Source")
+    use_mongodb = st.sidebar.checkbox("Use MongoDB", value=True)
+    
+    mongodb_connection_string = None
+    mongodb_database_name = None
+    
+    if use_mongodb:
+        if not MONGODB_AVAILABLE:
+            st.sidebar.error("pymongo not installed. Run: pip install pymongo")
+        else:
+            try:
+                secrets = st.secrets.get("mongodb", {})
+                default_conn = secrets.get("connection_string", "mongodb://localhost:27017/")
+                default_db = secrets.get("database_name", "face_attendance")
+            except Exception:
+                default_conn = "mongodb://localhost:27017/"
+                default_db = "face_attendance"
+            
+            mongodb_connection_string = st.sidebar.text_input(
+                "MongoDB Connection String",
+                value=default_conn,
+                type="default",
+                key="attendance_mongo_conn",
+            )
+            mongodb_database_name = st.sidebar.text_input(
+                "Database Name",
+                value=default_db,
+                key="attendance_mongo_db",
+            )
+    
+    # Attendance storage settings
+    st.sidebar.markdown("### Attendance Storage")
+    save_attendance_to_mongodb = st.sidebar.checkbox(
+        "Save attendance to MongoDB",
+        value=True,
+        disabled=not (use_mongodb and mongodb_connection_string and mongodb_database_name),
+    )
+    also_save_csv = st.sidebar.checkbox("Also save to CSV", value=False)
+
+    st.sidebar.markdown("### Verification Settings")
     threshold = st.sidebar.slider("Match threshold", 0.0, 2.0, 0.7, 0.01)
     use_detection = st.sidebar.checkbox("Use MTCNN face detection", value=True)
     require_detection = st.sidebar.checkbox("Require face detection", value=False)
@@ -303,6 +682,9 @@ def _attendance_ui() -> None:
             use_alignment=use_alignment,
             use_prewhitening=use_prewhitening,
             use_tta_flip=use_tta_flip,
+            use_mongodb=use_mongodb and mongodb_connection_string and mongodb_database_name,
+            mongodb_connection_string=mongodb_connection_string,
+            mongodb_database_name=mongodb_database_name,
         )
     except Exception as e:
         st.error(f"Failed to build reference database: {e}")
@@ -370,8 +752,21 @@ def _attendance_ui() -> None:
 
             if is_match:
                 log_name = entered_name.strip() or best_name
-                _append_attendance_row(log_name, best_name, best_dist)
-                st.success(f"Attendance recorded for **{log_name}**.")
+                _append_attendance_row(
+                    log_name,
+                    best_name,
+                    best_dist,
+                    use_mongodb=save_attendance_to_mongodb and mongodb_connection_string and mongodb_database_name,
+                    mongodb_connection_string=mongodb_connection_string if save_attendance_to_mongodb else None,
+                    mongodb_database_name=mongodb_database_name if save_attendance_to_mongodb else None,
+                    also_save_csv=also_save_csv,
+                )
+                success_msg = f"Attendance recorded for **{log_name}**"
+                if save_attendance_to_mongodb:
+                    success_msg += " (saved to MongoDB)"
+                if also_save_csv:
+                    success_msg += " (saved to CSV)"
+                st.success(success_msg)
             else:
                 st.warning("Face did not match any registered identity with the given threshold.")
     else:
@@ -453,12 +848,30 @@ def _attendance_ui() -> None:
                     best_name, best_dist = ctx.video_processor.last_best
                     if float(best_dist) < threshold:
                         log_name = entered_name.strip() or best_name
-                        _append_attendance_row(log_name, best_name, float(best_dist))
-                        st.success(f"Attendance recorded for **{log_name}**.")
+                        _append_attendance_row(
+                            log_name,
+                            best_name,
+                            float(best_dist),
+                            use_mongodb=save_attendance_to_mongodb and mongodb_connection_string and mongodb_database_name,
+                            mongodb_connection_string=mongodb_connection_string if save_attendance_to_mongodb else None,
+                            mongodb_database_name=mongodb_database_name if save_attendance_to_mongodb else None,
+                            also_save_csv=also_save_csv,
+                        )
+                        success_msg = f"Attendance recorded for **{log_name}**"
+                        if save_attendance_to_mongodb:
+                            success_msg += " (saved to MongoDB)"
+                        if also_save_csv:
+                            success_msg += " (saved to CSV)"
+                        st.success(success_msg)
                     else:
                         st.warning("Current live frame is not a MATCH. Move closer / adjust lighting.")
 
-    rows = _load_attendance_rows()
+    rows = _load_attendance_rows(
+        max_rows=200,
+        use_mongodb=use_mongodb and mongodb_connection_string and mongodb_database_name,
+        mongodb_connection_string=mongodb_connection_string,
+        mongodb_database_name=mongodb_database_name,
+    )
     if rows:
         st.markdown("### Recent Attendance")
         import pandas as pd  # Local import to keep top imports minimal

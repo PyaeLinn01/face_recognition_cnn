@@ -1,0 +1,48 @@
+# DVC ignore file - files that should not be tracked by DVC
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# MLflow
+mlruns/
+.mlflow/
+
+# Docker
+*.log
+
+# Large model files (track separately if needed)
+*.h5
+*.hdf5
+*.pb
+*.pkl
+*.pickle
+
+# Weights directory (track separately)
+weights/
+
+# MongoDB data
+data/db/
+
+# Temporary files
+*.tmp
+*.temp
+.cache/

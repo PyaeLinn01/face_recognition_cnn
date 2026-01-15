@@ -23,6 +23,19 @@ try:
 except ImportError:
     MONGODB_AVAILABLE = False
 
+try:
+    from mlflow_utils import (
+        start_verification_run,
+        log_mtcnn_params,
+        log_facenet_params,
+        log_verification_metrics,
+        log_dataset_info,
+        log_attendance_metrics,
+    )
+    MLFLOW_AVAILABLE = True
+except ImportError:
+    MLFLOW_AVAILABLE = False
+
 
 IMAGES_ROOT = CURRENT_DIR / "images"
 ATTENDANCE_CSV = CURRENT_DIR / "attendance.csv"
@@ -510,6 +523,14 @@ def _register_face_ui() -> None:
     st.sidebar.markdown("### MongoDB Settings")
     use_mongodb = st.sidebar.checkbox("Use MongoDB", value=True)
     
+    # MLflow tracking option
+    st.sidebar.markdown("### MLflow Tracking")
+    use_mlflow = st.sidebar.checkbox("Enable MLflow tracking", value=False, disabled=not MLFLOW_AVAILABLE, key="register_mlflow")
+    if not MLFLOW_AVAILABLE:
+        st.sidebar.warning("MLflow not available. Install: pip install mlflow")
+    elif use_mlflow:
+        st.sidebar.info("📊 Models logged to MLflow")
+    
     mongodb_connection_string = None
     mongodb_database_name = None
     
@@ -604,6 +625,26 @@ def _register_face_ui() -> None:
 
         st.session_state.captured_count = count + 1
         
+        # Log to MLflow if enabled (only on first image)
+        if use_mlflow and MLFLOW_AVAILABLE and count == 0:
+            try:
+                with start_verification_run(run_name=f"register_{name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"):
+                    log_mtcnn_params(
+                        min_confidence=0.90,
+                        margin_ratio=0.20,
+                        use_alignment=True,
+                    )
+                    log_facenet_params(
+                        use_prewhitening=False,
+                        use_tta_flip=True,
+                    )
+                    log_dataset_info(
+                        num_images=num_images,
+                        num_identities=1,
+                    )
+            except Exception as e:
+                st.sidebar.warning(f"MLflow logging error: {e}")
+        
         success_msg = f"Saved snapshot #{st.session_state.captured_count}"
         if save_to_filesystem and save_path:
             success_msg += f" to `{save_path}`"
@@ -681,6 +722,24 @@ def _attendance_ui() -> None:
     use_alignment = st.sidebar.checkbox("Align face (eyes/nose)", value=True)
     use_prewhitening = st.sidebar.checkbox("Prewhiten (normalize)", value=False)
     use_tta_flip = st.sidebar.checkbox("Flip TTA (average)", value=True)
+    
+    # MLflow tracking option
+    st.sidebar.markdown("### MLflow Tracking")
+    use_mlflow = st.sidebar.checkbox("Enable MLflow tracking", value=False, disabled=not MLFLOW_AVAILABLE)
+    if not MLFLOW_AVAILABLE:
+        st.sidebar.warning("MLflow not available. Install: pip install mlflow")
+    elif use_mlflow:
+        st.sidebar.info("📊 View models: `mlflow ui --port 5000`")
+        try:
+            import mlflow
+            tracking_uri = mlflow.get_tracking_uri()
+            if tracking_uri.startswith("file:"):
+                runs_dir = tracking_uri.replace("file:", "")
+                if Path(runs_dir).exists():
+                    num_runs = len(list(Path(runs_dir).rglob("meta.yaml")))
+                    st.sidebar.caption(f"✓ {num_runs} runs tracked")
+        except Exception:
+            pass
 
     try:
         database, ref_paths = _build_reference_db(
@@ -703,9 +762,93 @@ def _attendance_ui() -> None:
         st.error("No reference identities available. Please register at least one person first.")
         return
 
+    # Log dataset info to MLflow if enabled
+    if use_mlflow and MLFLOW_AVAILABLE:
+        try:
+            num_fs_images = len(list(IMAGES_ROOT.rglob("*.jpg"))) if IMAGES_ROOT.exists() else 0
+            num_mongo_images = len(database) * 4 if use_mongodb else 0
+            log_dataset_info(
+                num_images=num_fs_images + num_mongo_images,
+                num_identities=len(database),
+                dataset_path=IMAGES_ROOT if not use_mongodb else None,
+            )
+        except Exception as e:
+            st.sidebar.warning(f"MLflow logging error: {e}")
+
     entered_name = st.text_input("Person name (optional, for logging only)", "")
 
     model = get_facenet_model()
+    
+    # Initialize MLflow run if enabled (start run and log params once per session)
+    if use_mlflow and MLFLOW_AVAILABLE:
+        if "mlflow_run_id" not in st.session_state:
+            try:
+                import mlflow
+                from mlflow_utils import init_mlflow_experiment
+                experiment_id = init_mlflow_experiment("face_recognition")
+                run = mlflow.start_run(
+                    run_name=f"attendance_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
+                    experiment_id=experiment_id,
+                    nested=False,
+                )
+                st.session_state.mlflow_run_id = run.info.run_id
+                # Log parameters once at session start
+                log_mtcnn_params(
+                    min_confidence=min_confidence,
+                    margin_ratio=margin_ratio,
+                    use_alignment=use_alignment,
+                )
+                log_facenet_params(
+                    use_prewhitening=use_prewhitening,
+                    use_tta_flip=use_tta_flip,
+                )
+                
+                # Log models as artifacts (FaceNet model and MTCNN config)
+                try:
+                    from mlflow_utils import log_facenet_model, log_model_artifacts
+                    # Log FaceNet model
+                    log_facenet_model(model, model_name="facenet")
+                    # Log weights directory and sample images
+                    log_model_artifacts(
+                        weights_dir=CURRENT_DIR / "weights",
+                        images_dir=IMAGES_ROOT if IMAGES_ROOT.exists() else None,
+                    )
+                    # Log MTCNN configuration
+                    import mlflow
+                    mlflow.log_param("mtcnn_version", "0.1.1")
+                    mlflow.log_param("mtcnn_model_type", "MTCNN Face Detector")
+                    mlflow.log_text("MTCNN is a pre-trained face detection library", "mtcnn_info.txt")
+                except Exception as e:
+                    st.sidebar.warning(f"MLflow model logging error: {e}")
+                
+                # Log models as artifacts
+                try:
+                    from mlflow_utils import log_facenet_model, log_model_artifacts
+                    # Log FaceNet model
+                    log_facenet_model(model, model_name="facenet")
+                    # Log MTCNN info and weights directory
+                    log_model_artifacts(
+                        weights_dir=CURRENT_DIR / "weights",
+                        images_dir=IMAGES_ROOT if IMAGES_ROOT.exists() else None,
+                    )
+                    # Log MTCNN configuration
+                    import mlflow
+                    mlflow.log_param("mtcnn_version", "0.1.1")
+                    mlflow.log_param("mtcnn_model_type", "MTCNN Face Detector")
+                except Exception as e:
+                    st.sidebar.warning(f"MLflow model logging error: {e}")
+            except Exception as e:
+                st.sidebar.warning(f"MLflow initialization error: {e}")
+                st.session_state.mlflow_run_id = None
+        # Ensure we're using the active run for logging
+        elif st.session_state.mlflow_run_id:
+            try:
+                import mlflow
+                # Set active run if not already active
+                if mlflow.active_run() is None:
+                    mlflow.start_run(run_id=st.session_state.mlflow_run_id)
+            except Exception:
+                pass  # Run might be closed, will create new one if needed
 
     st.markdown("### Live camera (rounded detection box)")
     st.caption("If live camera doesn’t load, install dependencies and restart Streamlit.")
@@ -758,6 +901,18 @@ def _attendance_ui() -> None:
 
             is_match = best_dist < threshold
             st.write({"best_identity": best_name, "distance": best_dist, "threshold": threshold, "match": is_match})
+
+            # Log to MLflow if enabled
+            if use_mlflow and MLFLOW_AVAILABLE:
+                try:
+                    log_verification_metrics(
+                        distance=best_dist,
+                        threshold=threshold,
+                        is_match=is_match,
+                        identity=best_name,
+                    )
+                except Exception as e:
+                    st.sidebar.warning(f"MLflow logging error: {e}")
 
             if is_match:
                 log_name = entered_name.strip() or best_name
@@ -857,6 +1012,19 @@ def _attendance_ui() -> None:
                     best_name, best_dist = ctx.video_processor.last_best
                     if float(best_dist) < threshold:
                         log_name = entered_name.strip() or best_name
+                        
+                        # Log to MLflow if enabled
+                        if use_mlflow and MLFLOW_AVAILABLE:
+                            try:
+                                log_verification_metrics(
+                                    distance=float(best_dist),
+                                    threshold=threshold,
+                                    is_match=True,
+                                    identity=best_name,
+                                )
+                            except Exception as e:
+                                st.sidebar.warning(f"MLflow logging error: {e}")
+                        
                         _append_attendance_row(
                             log_name,
                             best_name,
@@ -874,6 +1042,23 @@ def _attendance_ui() -> None:
                         st.success(success_msg)
                     else:
                         st.warning("Current live frame is not a MATCH. Move closer / adjust lighting.")
+
+    # MLflow & DVC Status Section
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 📊 View Results")
+    
+    st.sidebar.markdown("**MLflow Models:**")
+    st.sidebar.code("mlflow ui --port 5000\n# Then open: http://localhost:5000")
+    st.sidebar.markdown("📍 **FaceNet**: Run → Artifacts → `facenet/`")
+    st.sidebar.markdown("📍 **MTCNN**: Run → Parameters → `mtcnn_*`")
+    
+    st.sidebar.markdown("**DVC Dataset:**")
+    st.sidebar.code("python check_dvc_status.py\n# Or: dvc status")
+    st.sidebar.markdown("📍 **Dataset**: `data/mongodb_export/`")
+    
+    st.sidebar.markdown("**📖 Guides:**")
+    st.sidebar.markdown("- [Quick View Guide](QUICK_VIEW_GUIDE.md)")
+    st.sidebar.markdown("- [Where to Find](WHERE_TO_FIND.md)")
 
     rows = _load_attendance_rows(
         max_rows=200,

@@ -1,0 +1,14 @@
+artifact_uri: file:///Users/pyaelinn/face_recon/face_recognition_cnn/mlruns/0/2566cbb457e84194b0fa8f47fa5cd306/artifacts
+end_time: null
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 2566cbb457e84194b0fa8f47fa5cd306
+run_name: dapper-goat-782
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1768449651576
+status: 1
+tags: []
+user_id: pyaelinn

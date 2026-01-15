@@ -1,0 +1,14 @@
+artifact_uri: file:///Users/pyaelinn/face_recon/face_recognition_cnn/mlruns/0/dcce1d5144774128b6b00df0b92c5953/artifacts
+end_time: null
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: dcce1d5144774128b6b00df0b92c5953
+run_name: invincible-goose-581
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1768450662024
+status: 1
+tags: []
+user_id: pyaelinn

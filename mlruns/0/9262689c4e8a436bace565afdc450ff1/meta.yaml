@@ -1,0 +1,14 @@
+artifact_uri: file:///Users/pyaelinn/face_recon/face_recognition_cnn/mlruns/0/9262689c4e8a436bace565afdc450ff1/artifacts
+end_time: null
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 9262689c4e8a436bace565afdc450ff1
+run_name: delightful-ox-2
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1768449670080
+status: 1
+tags: []
+user_id: pyaelinn

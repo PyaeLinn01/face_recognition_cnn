@@ -1,0 +1,14 @@
+artifact_uri: file:///Users/pyaelinn/face_recon/face_recognition_cnn/mlruns/0/5fd3ce33feed48a88c4e8c7d711401ec/artifacts
+end_time: null
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 5fd3ce33feed48a88c4e8c7d711401ec
+run_name: casual-ox-956
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1768450584796
+status: 1
+tags: []
+user_id: pyaelinn

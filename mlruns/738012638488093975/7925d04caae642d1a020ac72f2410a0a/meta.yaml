@@ -1,0 +1,14 @@
+artifact_uri: file:///Users/pyaelinn/face_recon/face_recognition_cnn/mlruns/738012638488093975/7925d04caae642d1a020ac72f2410a0a/artifacts
+end_time: 1768450539011
+entry_point_name: ''
+experiment_id: '738012638488093975'
+lifecycle_stage: active
+run_id: 7925d04caae642d1a020ac72f2410a0a
+run_name: register_PLL_20260115_104538
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1768450539003
+status: 3
+tags: []
+user_id: pyaelinn

@@ -1,0 +1,36 @@
+# DVC pipeline configuration for face recognition dataset
+
+stages:
+  prepare_dataset:
+    cmd: python scripts/prepare_dataset.py
+    deps:
+      - images/
+      - datasets/
+    outs:
+      - data/processed/
+    metrics:
+      - metrics/dataset_stats.json
+    params:
+      - config/dataset_config.yaml
+
+  train_facenet:
+    cmd: python scripts/train_facenet.py
+    deps:
+      - data/processed/
+      - weights/
+    outs:
+      - models/facenet/
+    metrics:
+      - metrics/training_metrics.json
+    params:
+      - config/training_config.yaml
+
+  evaluate_model:
+    cmd: python scripts/evaluate_model.py
+    deps:
+      - models/facenet/
+      - data/processed/
+    metrics:
+      - metrics/evaluation_metrics.json
+    params:
+      - config/evaluation_config.yaml

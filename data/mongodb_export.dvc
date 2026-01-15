@@ -1,0 +1,6 @@
+outs:
+- md5: 09860112a5e56b5c82d9c7e4e2f5c0eb.dir
+  size: 38780
+  nfiles: 10
+  hash: md5
+  path: mongodb_export

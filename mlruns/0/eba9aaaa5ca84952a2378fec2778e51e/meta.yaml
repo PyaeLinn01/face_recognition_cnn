@@ -1,0 +1,14 @@
+artifact_uri: file:///Users/pyaelinn/face_recon/face_recognition_cnn/mlruns/0/eba9aaaa5ca84952a2378fec2778e51e/artifacts
+end_time: null
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: eba9aaaa5ca84952a2378fec2778e51e
+run_name: sassy-deer-386
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1768450664439
+status: 1
+tags: []
+user_id: pyaelinn

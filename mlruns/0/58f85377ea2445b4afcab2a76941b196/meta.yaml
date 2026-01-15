@@ -1,0 +1,14 @@
+artifact_uri: file:///Users/pyaelinn/face_recon/face_recognition_cnn/mlruns/0/58f85377ea2445b4afcab2a76941b196/artifacts
+end_time: null
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 58f85377ea2445b4afcab2a76941b196
+run_name: nebulous-croc-849
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1768449217436
+status: 1
+tags: []
+user_id: pyaelinn

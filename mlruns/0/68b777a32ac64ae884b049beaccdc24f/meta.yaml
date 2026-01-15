@@ -1,0 +1,14 @@
+artifact_uri: file:///Users/pyaelinn/face_recon/face_recognition_cnn/mlruns/0/68b777a32ac64ae884b049beaccdc24f/artifacts
+end_time: null
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 68b777a32ac64ae884b049beaccdc24f
+run_name: bald-trout-517
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1768450652389
+status: 1
+tags: []
+user_id: pyaelinn

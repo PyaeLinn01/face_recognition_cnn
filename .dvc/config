@@ -1,0 +1,9 @@
+# DVC configuration
+['remote "local"']
+    url = ./dvc_storage
+['remote "s3"']
+    url = s3://your-bucket-name/dvc-storage
+    # Uncomment and configure if using S3
+    # endpointurl = https://s3.amazonaws.com
+    # access_key_id = YOUR_ACCESS_KEY
+    # secret_access_key = YOUR_SECRET_KEY

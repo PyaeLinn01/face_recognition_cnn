@@ -1,0 +1,14 @@
+artifact_uri: file:///Users/pyaelinn/face_recon/face_recognition_cnn/mlruns/0/c1b5f8dda39347c8af6c9f145c14a97f/artifacts
+end_time: null
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: c1b5f8dda39347c8af6c9f145c14a97f
+run_name: nosy-horse-542
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1768449208977
+status: 1
+tags: []
+user_id: pyaelinn

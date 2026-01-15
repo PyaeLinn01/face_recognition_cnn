@@ -1,0 +1,14 @@
+artifact_uri: file:///Users/pyaelinn/face_recon/face_recognition_cnn/mlruns/0/94b61ed3addd4c1bac8e7776820c2659/artifacts
+end_time: null
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 94b61ed3addd4c1bac8e7776820c2659
+run_name: mercurial-elk-315
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1768449198982
+status: 1
+tags: []
+user_id: pyaelinn

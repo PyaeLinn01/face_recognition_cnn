@@ -37,6 +37,12 @@ COPY . .
 ENV MONGODB_CONNECTION_STRING=mongodb://host.docker.internal:27017/
 ENV MONGODB_DATABASE_NAME=face_attendance
 
+# MLflow tracking URI (file-based by default, can be overridden)
+ENV MLFLOW_TRACKING_URI=file:/app/mlruns
+
+# DVC remote configuration (optional)
+ENV DVC_REMOTE=local
+
 # Create startup script that uses environment variables
 RUN echo '#!/bin/bash\n\
 # Use environment variables if set, otherwise use defaults\n\

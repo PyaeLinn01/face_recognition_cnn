@@ -1,0 +1,14 @@
+artifact_uri: file:///Users/pyaelinn/face_recon/face_recognition_cnn/mlruns/0/560163f70ea24ec9a058d822ca3e1224/artifacts
+end_time: null
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 560163f70ea24ec9a058d822ca3e1224
+run_name: welcoming-kit-535
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1768450586210
+status: 1
+tags: []
+user_id: pyaelinn

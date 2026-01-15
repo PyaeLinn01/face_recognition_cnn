@@ -1,0 +1,14 @@
+artifact_uri: file:///Users/pyaelinn/face_recon/face_recognition_cnn/mlruns/0/7ae728cbca1244cbb69557c023dd020c/artifacts
+end_time: null
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 7ae728cbca1244cbb69557c023dd020c
+run_name: defiant-pig-193
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1768449651577
+status: 1
+tags: []
+user_id: pyaelinn

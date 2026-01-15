@@ -17,7 +17,53 @@ This guide will help you build and run your face recognition application using D
    - `images/` directory (contains reference face images)
    - `nn4.small2.v7.h5` (model weights file if needed)
 
-## Building the Docker Image
+## Building and Running with Docker Compose (Recommended - Includes MongoDB)
+
+The easiest way to run the application with MongoDB is using Docker Compose, which runs MongoDB and Streamlit in separate containers.
+
+1. **Navigate to your project directory**:
+   ```bash
+   cd /Users/pyaelinn/face_recon/face_recognition_cnn
+   ```
+
+2. **Start both MongoDB and Streamlit**:
+   ```bash
+   docker-compose up -d
+   ```
+   
+   This will:
+   - Pull the MongoDB 7.0 image
+   - Build your Streamlit application image
+   - Start both containers
+   - Set up networking between them
+   - Create persistent volumes for MongoDB data
+
+3. **View logs**:
+   ```bash
+   docker-compose logs -f
+   ```
+
+4. **Stop everything**:
+   ```bash
+   docker-compose down
+   ```
+
+5. **Stop and remove volumes** (removes MongoDB data):
+   ```bash
+   docker-compose down -v
+   ```
+
+### MongoDB Connection Settings in Streamlit App
+
+When using docker-compose, the MongoDB connection is automatically configured:
+- **Connection String**: `mongodb://mongodb:27017/`
+- **Database Name**: `face_attendance`
+
+The app will automatically connect to MongoDB running in the separate container.
+
+## Building the Docker Image (Without MongoDB)
+
+If you want to build just the Streamlit app (and connect to an external MongoDB):
 
 1. **Navigate to your project directory**:
    ```bash
@@ -35,7 +81,7 @@ This guide will help you build and run your face recognition application using D
    
    **Note**: The first build may take several minutes as it downloads the base image and installs dependencies.
 
-## Running the Container
+## Running the Container (Without Docker Compose)
 
 ### Basic Run
 
@@ -47,6 +93,11 @@ This command:
 - `-p 8501:8501`: Maps port 8501 from the container to port 8501 on your host
 - `face-recognition-cnn`: The image name to run
 
+**Note**: If you need MongoDB, you'll need to either:
+1. Use docker-compose (recommended - see above)
+2. Run MongoDB separately: `docker run -d -p 27017:27017 --name mongodb mongo:7.0`
+3. Connect to an external MongoDB instance
+
 ### Access the Application
 
 Once the container is running, open your web browser and navigate to:
@@ -54,7 +105,19 @@ Once the container is running, open your web browser and navigate to:
 http://localhost:8501
 ```
 
-You should see the Streamlit face verification interface.
+You should see the Streamlit face attendance interface.
+
+### Access MongoDB (if running separately)
+
+If MongoDB is running in a container, you can access it:
+```bash
+docker exec -it mongodb mongosh
+```
+
+Or connect from your host machine:
+```bash
+mongosh mongodb://localhost:27017/
+```
 
 ### Running in Detached Mode (Background)
 

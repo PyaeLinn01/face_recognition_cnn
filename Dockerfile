@@ -31,11 +31,28 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy all project files
 COPY . .
 
+# Set default MongoDB connection for Docker (connects to host MongoDB)
+# On macOS/Windows, use host.docker.internal to access host machine
+# On Linux, use host.docker.internal or --network host when running docker
+ENV MONGODB_CONNECTION_STRING=mongodb://host.docker.internal:27017/
+ENV MONGODB_DATABASE_NAME=face_attendance
+
+# Create startup script that uses environment variables
+RUN echo '#!/bin/bash\n\
+# Use environment variables if set, otherwise use defaults\n\
+export MONGODB_CONN=${MONGODB_CONNECTION_STRING:-mongodb://host.docker.internal:27017/}\n\
+export MONGODB_DB=${MONGODB_DATABASE_NAME:-face_attendance}\n\
+\n\
+# Start Streamlit with environment variables\n\
+exec streamlit run attend_app.py --server.port=8501 --server.address=0.0.0.0\n\
+' > /app/start.sh && chmod +x /app/start.sh
+
 # Expose Streamlit default port
 EXPOSE 8501
+EXPOSE 27017
 
 # Health check
 HEALTHCHECK CMD curl --fail http://localhost:8501/_stcore/health || exit 1
 
-# Run Streamlit app
-CMD ["streamlit", "run", "attend_app.py", "--server.port=8501", "--server.address=0.0.0.0"]
+# Run startup script
+CMD ["/app/start.sh"]

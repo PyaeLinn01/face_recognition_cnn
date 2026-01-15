@@ -517,14 +517,18 @@ def _register_face_ui() -> None:
         if not MONGODB_AVAILABLE:
             st.sidebar.error("pymongo not installed. Run: pip install pymongo")
         else:
-            # Try to get from secrets first
-            try:
-                secrets = st.secrets.get("mongodb", {})
-                default_conn = secrets.get("connection_string", "mongodb://localhost:27017/")
-                default_db = secrets.get("database_name", "face_attendance")
-            except Exception:
-                default_conn = "mongodb://localhost:27017/"
-                default_db = "face_attendance"
+            # Try to get from environment variables first (for Docker), then secrets, then defaults
+            default_conn = os.getenv("MONGODB_CONNECTION_STRING", None)
+            default_db = os.getenv("MONGODB_DATABASE_NAME", None)
+            
+            if default_conn is None or default_db is None:
+                try:
+                    secrets = st.secrets.get("mongodb", {})
+                    default_conn = secrets.get("connection_string", "mongodb://localhost:27017/")
+                    default_db = secrets.get("database_name", "face_attendance")
+                except Exception:
+                    default_conn = default_conn or "mongodb://localhost:27017/"
+                    default_db = default_db or "face_attendance"
             
             mongodb_connection_string = st.sidebar.text_input(
                 "MongoDB Connection String",
@@ -634,13 +638,18 @@ def _attendance_ui() -> None:
         if not MONGODB_AVAILABLE:
             st.sidebar.error("pymongo not installed. Run: pip install pymongo")
         else:
-            try:
-                secrets = st.secrets.get("mongodb", {})
-                default_conn = secrets.get("connection_string", "mongodb://localhost:27017/")
-                default_db = secrets.get("database_name", "face_attendance")
-            except Exception:
-                default_conn = "mongodb://localhost:27017/"
-                default_db = "face_attendance"
+            # Try to get from environment variables first (for Docker), then secrets, then defaults
+            default_conn = os.getenv("MONGODB_CONNECTION_STRING", None)
+            default_db = os.getenv("MONGODB_DATABASE_NAME", None)
+            
+            if default_conn is None or default_db is None:
+                try:
+                    secrets = st.secrets.get("mongodb", {})
+                    default_conn = secrets.get("connection_string", "mongodb://localhost:27017/")
+                    default_db = secrets.get("database_name", "face_attendance")
+                except Exception:
+                    default_conn = default_conn or "mongodb://localhost:27017/"
+                    default_db = default_db or "face_attendance"
             
             mongodb_connection_string = st.sidebar.text_input(
                 "MongoDB Connection String",

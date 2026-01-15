@@ -1,0 +1,40 @@
+services:
+  mongodb:
+    image: mongo:6.0.9
+    container_name: face-attendance-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - mongodb_config:/data/configdb
+    environment:
+      MONGO_INITDB_DATABASE: face_attendance
+    command: mongod --bind_ip_all
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  streamlit-app:
+    build: .
+    container_name: face-attendance-app
+    restart: unless-stopped
+    ports:
+      - "8501:8501"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    environment:
+      - MONGODB_CONNECTION_STRING=mongodb://mongodb:27017/
+      - MONGODB_DATABASE_NAME=face_attendance
+    volumes:
+      - ./images:/app/images
+      - ./weights:/app/weights
+    command: streamlit run attend_app.py --server.port=8501 --server.address=0.0.0.0
+
+volumes:
+  mongodb_data:
+  mongodb_config:

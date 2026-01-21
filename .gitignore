@@ -1,1 +1,98 @@
+# Images (already in your .gitignore)
 images/
+
+# Personal/Team Configuration Files
+.cursorrules
+.cursorrules_backup
+.cursorrules_enhanced
+
+# Project-specific Documentation (keep only README.md)
+cursor.md
+DOCKER_GUIDE.md
+DVC_MONGODB_GUIDE.md
+HOW_TO_VIEW_EVERYTHING.md
+INTEGRATION_SUMMARY.md
+MLFLOW_DVC_GUIDE.md
+QUICK_START_MLFLOW_DVC.md
+QUICK_VIEW_GUIDE.md
+VIEW_RESULTS_GUIDE.md
+WHERE_TO_FIND.md
+
+# Python Standard Ignores
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environments
+venv/
+env/
+ENV/
+.venv/
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# IDE and Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS Generated Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# MLflow and Experiment Tracking
+mlruns/
+mlflow.db
+*.log
+
+# DVC
+.dvc/tmp/
+.dvc/cache/
+
+# Temporary Files
+*.tmp
+*.temp
+.cache/
+
+# Jupyter Notebook Checkpoints
+.ipynb_checkpoints
+
+# Node.js (if you add frontend later)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Docker (optional - uncomment if you want to ignore)
+# .dockerignore
+# docker-compose.override.yml
+
+# Database files
+attendance.csv

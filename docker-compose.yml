@@ -1,6 +1,6 @@
 services:
   mongodb:
-    image: mongo:6.0.9
+    image: mongo:8.0
     container_name: face-attendance-mongodb
     restart: unless-stopped
     ports:

@@ -260,13 +260,19 @@ def get_embedding(
     use_prewhitening: bool = False,
     use_tta_flip: bool = True,
 ) -> np.ndarray:
-    """Get FaceNet embedding from preprocessed 96x96 RGB image."""
+    """Get FaceNet embedding from preprocessed 96x96 RGB image.
+    
+    Returns embedding with shape (1, 128) to match attend_app.py format.
+    """
     model = get_facenet_model()
     
-    # Normalize
+    # Normalize to [0, 1] range
     img = processed_rgb.astype(np.float32) / 255.0
     if use_prewhitening:
         img = _prewhiten(img)
+    
+    # Round to match app.py behavior
+    img = np.around(img, decimals=12)
     
     # Get embedding
     x = np.array([img])
@@ -278,14 +284,19 @@ def get_embedding(
         x2 = np.array([img_flip])
         emb2 = model.predict_on_batch(x2)[0]
         emb = (emb + emb2) / 2.0
+        # Only normalize after TTA (matching app.py)
+        emb = emb / max(np.linalg.norm(emb), 1e-12)
     
-    # Normalize embedding
-    emb = emb / max(np.linalg.norm(emb), 1e-12)
-    return emb
+    # Return with shape (1, 128) to match attend_app.py
+    return np.expand_dims(emb, axis=0)
 
 
 def load_reference_database() -> Dict[str, np.ndarray]:
-    """Load reference database from MongoDB and build embeddings."""
+    """Load reference database from MongoDB and build embeddings.
+    
+    Images in MongoDB are already preprocessed 96x96 faces (cropped, aligned by MTCNN).
+    We just decode, normalize, and compute embeddings.
+    """
     if "database" in _database_cache:
         return _database_cache["database"]
     
@@ -305,32 +316,46 @@ def load_reference_database() -> Dict[str, np.ndarray]:
         
         print(f"Loading {len(images_by_name)} identities from MongoDB...")
         database = {}
+        model = get_facenet_model()
         
         for name, image_bytes_list in images_by_name.items():
-            embeddings = []
+            per_identity_embs = []
             for img_bytes in image_bytes_list:
                 if not img_bytes:
                     continue
                 try:
-                    # Process image with face detection
-                    processed, detected, _ = preprocess_and_detect_face(
-                        img_bytes,
-                        use_detection=True,
-                        min_confidence=0.90,
-                        margin_ratio=0.20,
-                        use_alignment=True,
-                    )
-                    emb = get_embedding(processed, use_prewhitening=False, use_tta_flip=True)
-                    embeddings.append(emb)
+                    # Decode pre-processed 96x96 face image from MongoDB
+                    arr = np.frombuffer(img_bytes, dtype=np.uint8)
+                    img_bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                    if img_bgr is None:
+                        continue
+                    
+                    # Image is already 96x96 face crop, just convert to RGB and normalize
+                    # Match attend_app.py exactly
+                    img_rgb = img_bgr[..., ::-1].astype(np.float32) / 255.0
+                    
+                    # Ensure correct size
+                    if img_rgb.shape[:2] != (96, 96):
+                        img_rgb = cv2.resize(img_rgb, (96, 96), interpolation=cv2.INTER_AREA)
+                    
+                    # Get embedding (same as attend_app.py)
+                    x = np.array([img_rgb])
+                    emb = model.predict_on_batch(x)[0]
+                    emb = emb / max(np.linalg.norm(emb), 1e-12)
+                    
+                    # Store with shape (1, 128) like attend_app.py
+                    per_identity_embs.append(np.expand_dims(emb, axis=0))
                 except Exception as e:
                     print(f"Error processing image for {name}: {e}")
                     continue
             
-            if embeddings:
-                # Average embeddings for this identity
-                avg_emb = np.mean(embeddings, axis=0)
-                database[name] = avg_emb / max(np.linalg.norm(avg_emb), 1e-12)
-                print(f"  Loaded {name} with {len(embeddings)} embeddings")
+            if per_identity_embs:
+                # Average embeddings for this identity (same as attend_app.py)
+                mean_emb = np.mean(np.concatenate(per_identity_embs, axis=0), axis=0)
+                mean_emb = mean_emb / max(np.linalg.norm(mean_emb), 1e-12)
+                # Store with shape (1, 128)
+                database[name] = np.expand_dims(mean_emb, axis=0)
+                print(f"  Loaded {name} with {len(per_identity_embs)} embeddings")
         
         _database_cache["database"] = database
         print(f"Reference database loaded: {len(database)} identities")
@@ -365,13 +390,14 @@ def health_check():
 @app.route('/api/v1/detect-face', methods=['POST'])
 def detect_face():
     """
-    Detect faces in an image and return bounding boxes.
+    Detect faces in an image, return bounding boxes, and identify the person.
     Used for real-time face detection overlay on camera feed.
     
     Request:
     {
         "image_base64": "...",  # Base64 encoded image
-        "min_confidence": 0.90
+        "min_confidence": 0.90,
+        "identify": true  # Whether to also identify the person
     }
     
     Response:
@@ -380,7 +406,9 @@ def detect_face():
             {
                 "box": [x, y, width, height],
                 "confidence": 0.99,
-                "keypoints": {...}
+                "keypoints": {...},
+                "identity": "John",  # If identified
+                "match_confidence": 0.85  # Match confidence (1 - distance)
             }
         ],
         "count": 1
@@ -390,6 +418,8 @@ def detect_face():
         data = request.json
         image_base64 = data.get("image_base64")
         min_confidence = data.get("min_confidence", 0.90)
+        identify = data.get("identify", True)  # Default to identify
+        threshold = data.get("threshold", 0.7)  # Distance threshold for matching
         
         if not image_base64:
             return jsonify({"error": "Missing image"}), 400
@@ -408,6 +438,11 @@ def detect_face():
         detector = get_mtcnn_detector()
         faces = detector.detect_faces(img_rgb)
         
+        # Load database for identification
+        database = None
+        if identify:
+            database = load_reference_database()
+        
         # Filter by confidence and format response
         detected_faces = []
         for face in faces:
@@ -415,11 +450,58 @@ def detect_face():
             if conf >= min_confidence:
                 box = face.get("box", [0, 0, 0, 0])
                 keypoints = face.get("keypoints", {})
-                detected_faces.append({
+                
+                face_data = {
                     "box": [int(b) for b in box],  # [x, y, width, height]
                     "confidence": round(conf, 4),
-                    "keypoints": {k: [int(v[0]), int(v[1])] for k, v in keypoints.items()} if keypoints else {}
-                })
+                    "keypoints": {k: [int(v[0]), int(v[1])] for k, v in keypoints.items()} if keypoints else {},
+                    "identity": None,
+                    "match_confidence": 0.0
+                }
+                
+                # Try to identify the face if database exists
+                if database and identify:
+                    try:
+                        # Use proper face alignment like app.py
+                        aligned_face = None
+                        
+                        # Try alignment first (preferred method)
+                        if keypoints and "left_eye" in keypoints and "right_eye" in keypoints:
+                            aligned_face = _align_face_by_keypoints(img_rgb, keypoints, output_size=96)
+                        
+                        # Fall back to crop with margin if alignment fails
+                        if aligned_face is None:
+                            x, y, w, h = box
+                            face_crop = _crop_with_margin(img_rgb, (x, y, w, h), margin_ratio=0.20)
+                            face_crop = _center_square_crop(face_crop)
+                            aligned_face = cv2.resize(face_crop, (96, 96), interpolation=cv2.INTER_AREA)
+                        
+                        # Get embedding (no TTA for real-time speed)
+                        # Normalize same way as reference database
+                        img_normalized = aligned_face.astype(np.float32) / 255.0
+                        x_batch = np.array([img_normalized])
+                        emb = get_facenet_model().predict_on_batch(x_batch)[0]
+                        emb = emb / max(np.linalg.norm(emb), 1e-12)
+                        query_emb = np.expand_dims(emb, axis=0)
+                        
+                        # Find best match
+                        best_name = None
+                        best_dist = float("inf")
+                        
+                        for identity, ref_emb in database.items():
+                            dist = float(np.linalg.norm(query_emb - ref_emb))
+                            if dist < best_dist:
+                                best_dist = dist
+                                best_name = identity
+                        
+                        if best_dist < threshold:
+                            face_data["identity"] = best_name
+                            face_data["match_confidence"] = round(max(0, 1.0 - best_dist), 3)
+                    except Exception as e:
+                        # Identification failed, continue without identity
+                        print(f"Identification error: {e}")
+                
+                detected_faces.append(face_data)
         
         return jsonify({
             "faces": detected_faces,
@@ -451,7 +533,8 @@ def register_face():
         # Decode base64 image
         image_bytes = base64.b64decode(image_base64)
         
-        # Process with face detection
+        # Process with face detection using MTCNN (like attend_app.py)
+        # This detects face, crops with margin, aligns using keypoints, and resizes to 96x96
         processed_rgb, face_detected, face_info = preprocess_and_detect_face(
             image_bytes,
             use_detection=True,
@@ -460,18 +543,25 @@ def register_face():
             use_alignment=True,
         )
         
-        # Encode processed image back to bytes for storage
-        processed_bgr = processed_rgb[..., ::-1]  # RGB to BGR
+        if not face_detected:
+            return jsonify({
+                "error": "No face detected in image. Please ensure your face is clearly visible.",
+                "face_detected": False
+            }), 400
+        
+        # Encode processed 96x96 face image to bytes for storage
+        processed_bgr = processed_rgb[..., ::-1]  # RGB to BGR for cv2
         _, processed_bytes = cv2.imencode(".jpg", processed_bgr, [cv2.IMWRITE_JPEG_QUALITY, 95])
         processed_bytes = processed_bytes.tobytes()
         
-        # Save to MongoDB
+        # Save to MongoDB with same schema as attend_app.py
         collection = get_mongodb_collection("face_images")
         
         doc = {
             "name": name,
             "image_index": image_index,
             "image_bytes": processed_bytes,  # Store processed 96x96 face
+            "size": (96, 96),  # Match attend_app.py schema
             "face_detected": face_detected,
             "face_confidence": face_info.get("confidence") if face_info else None,
             "created_at": datetime.now(),
@@ -659,6 +749,121 @@ def reload_database():
             "identities": len(database),
             "names": list(database.keys())
         }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ==================== AUTH ENDPOINTS ====================
+
+@app.route('/api/v1/auth/signup', methods=['POST'])
+def signup():
+    """Register a new user."""
+    try:
+        data = request.json
+        email = data.get("email", "").strip().lower()
+        password = data.get("password", "")
+        name = data.get("name", "").strip()
+        
+        if not email or not password or not name:
+            return jsonify({"error": "Email, password, and name are required"}), 400
+        
+        if len(password) < 6:
+            return jsonify({"error": "Password must be at least 6 characters"}), 400
+        
+        collection = get_mongodb_collection("users")
+        
+        # Check if user already exists
+        existing = collection.find_one({"email": email})
+        if existing:
+            return jsonify({"error": "User with this email already exists"}), 400
+        
+        # Simple password hashing (in production, use bcrypt)
+        import hashlib
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        
+        doc = {
+            "email": email,
+            "password_hash": password_hash,
+            "name": name,
+            "created_at": datetime.now(),
+        }
+        
+        result = collection.insert_one(doc)
+        
+        return jsonify({
+            "success": True,
+            "user": {
+                "id": str(result.inserted_id),
+                "email": email,
+                "name": name,
+            }
+        }), 201
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/v1/auth/login', methods=['POST'])
+def login():
+    """Login user."""
+    try:
+        data = request.json
+        email = data.get("email", "").strip().lower()
+        password = data.get("password", "")
+        
+        if not email or not password:
+            return jsonify({"error": "Email and password are required"}), 400
+        
+        collection = get_mongodb_collection("users")
+        
+        # Find user
+        user = collection.find_one({"email": email})
+        if not user:
+            return jsonify({"error": "Invalid email or password"}), 401
+        
+        # Check password
+        import hashlib
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        
+        if user.get("password_hash") != password_hash:
+            return jsonify({"error": "Invalid email or password"}), 401
+        
+        return jsonify({
+            "success": True,
+            "user": {
+                "id": str(user["_id"]),
+                "email": user["email"],
+                "name": user["name"],
+            }
+        }), 200
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/v1/auth/user/<user_id>', methods=['GET'])
+def get_user(user_id):
+    """Get user by ID."""
+    try:
+        from bson.objectid import ObjectId
+        collection = get_mongodb_collection("users")
+        
+        user = collection.find_one({"_id": ObjectId(user_id)})
+        if not user:
+            return jsonify({"error": "User not found"}), 404
+        
+        return jsonify({
+            "user": {
+                "id": str(user["_id"]),
+                "email": user["email"],
+                "name": user["name"],
+            }
+        }), 200
+        
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

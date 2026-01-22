@@ -1,0 +1,14 @@
+artifact_uri: file:///Users/pyaelinn/face_recon/face_recognition_cnn/mlruns/0/811e6a8b2a274623aa07a7a7ebaadedb/artifacts
+end_time: null
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 811e6a8b2a274623aa07a7a7ebaadedb
+run_name: gifted-smelt-357
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1768576457031
+status: 1
+tags: []
+user_id: pyaelinn

@@ -1,0 +1,14 @@
+artifact_uri: file:///Users/pyaelinn/face_recon/face_recognition_cnn/mlruns/0/19c952bea7b9419882d91dd24dcc1899/artifacts
+end_time: null
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 19c952bea7b9419882d91dd24dcc1899
+run_name: rumbling-shoat-953
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1768576803404
+status: 1
+tags: []
+user_id: pyaelinn

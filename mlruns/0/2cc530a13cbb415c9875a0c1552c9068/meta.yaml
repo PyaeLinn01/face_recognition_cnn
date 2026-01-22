@@ -1,0 +1,14 @@
+artifact_uri: file:///Users/pyaelinn/face_recon/face_recognition_cnn/mlruns/0/2cc530a13cbb415c9875a0c1552c9068/artifacts
+end_time: null
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 2cc530a13cbb415c9875a0c1552c9068
+run_name: handsome-goat-869
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1768577913697
+status: 1
+tags: []
+user_id: pyaelinn

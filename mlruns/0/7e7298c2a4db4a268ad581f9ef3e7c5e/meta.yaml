@@ -1,0 +1,14 @@
+artifact_uri: file:///Users/pyaelinn/face_recon/face_recognition_cnn/mlruns/0/7e7298c2a4db4a268ad581f9ef3e7c5e/artifacts
+end_time: null
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 7e7298c2a4db4a268ad581f9ef3e7c5e
+run_name: melodic-rook-900
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1768576486832
+status: 1
+tags: []
+user_id: pyaelinn

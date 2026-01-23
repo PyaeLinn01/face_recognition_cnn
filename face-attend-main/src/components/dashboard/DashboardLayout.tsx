@@ -8,7 +8,12 @@ import {
   Clock,
   LogOut,
   Menu,
-  X
+  X,
+  GraduationCap,
+  BookOpen,
+  Users,
+  UserCog,
+  ClipboardList
 } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '@/lib/auth-context';
@@ -18,12 +23,27 @@ interface DashboardLayoutProps {
   children: ReactNode;
 }
 
-// Simplified navigation - no auth required
-const navLinks = [
+// Navigation links based on role
+const studentLinks = [
   { to: '/dashboard', icon: Home, label: 'Dashboard' },
   { to: '/dashboard/face-register', icon: Camera, label: 'Face Registration' },
   { to: '/dashboard/attendance', icon: CheckCircle, label: 'Mark Attendance' },
-  { to: '/dashboard/history', icon: Clock, label: 'Attendance History' },
+  { to: '/dashboard/history', icon: Clock, label: 'My History' },
+];
+
+const teacherLinks = [
+  { to: '/dashboard', icon: Home, label: 'Dashboard' },
+  { to: '/dashboard/teacher/attendance', icon: ClipboardList, label: 'View Attendance' },
+  { to: '/dashboard/history', icon: Clock, label: 'All History' },
+];
+
+const adminLinks = [
+  { to: '/dashboard', icon: Home, label: 'Dashboard' },
+  { to: '/dashboard/admin/students', icon: Users, label: 'Manage Students' },
+  { to: '/dashboard/admin/teachers', icon: UserCog, label: 'Manage Teachers' },
+  { to: '/dashboard/admin/majors', icon: GraduationCap, label: 'Manage Majors' },
+  { to: '/dashboard/admin/subjects', icon: BookOpen, label: 'Manage Subjects' },
+  { to: '/dashboard/teacher/attendance', icon: ClipboardList, label: 'View Attendance' },
 ];
 
 export function DashboardLayout({ children }: DashboardLayoutProps) {
@@ -36,6 +56,18 @@ export function DashboardLayout({ children }: DashboardLayoutProps) {
     await signOut();
     navigate('/');
   };
+
+  // Get nav links based on user role
+  const getNavLinks = () => {
+    if (!user) return studentLinks;
+    switch (user.role) {
+      case 'admin': return adminLinks;
+      case 'teacher': return teacherLinks;
+      default: return studentLinks;
+    }
+  };
+
+  const navLinks = getNavLinks();
 
   return (
     <div className="min-h-screen bg-background flex">

@@ -2,9 +2,10 @@ import { useEffect, useState } from 'react';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Camera, CheckCircle, Users, Clock } from 'lucide-react';
+import { Camera, CheckCircle, Users, Clock, GraduationCap, BookOpen, UserCog, ClipboardList } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { faceAPI } from '@/lib/face-api';
+import { useAuth } from '@/lib/auth-context';
 
 interface AttendanceRecord {
   name: string;
@@ -19,6 +20,7 @@ interface RegisteredFace {
 }
 
 export default function Dashboard() {
+  const { user } = useAuth();
   const [recentAttendance, setRecentAttendance] = useState<AttendanceRecord[]>([]);
   const [registeredFaces, setRegisteredFaces] = useState<RegisteredFace[]>([]);
   const [isLoading, setIsLoading] = useState(true);
@@ -60,7 +62,7 @@ export default function Dashboard() {
         <div>
           <h1 className="text-3xl font-bold">Dashboard</h1>
           <p className="text-muted-foreground mt-1">
-            Face Recognition Attendance System
+            Welcome, {user?.name}! ({user?.role})
           </p>
         </div>
 
@@ -84,46 +86,154 @@ export default function Dashboard() {
           </CardContent>
         </Card>
 
-        {/* Quick Actions */}
-        <div className="grid md:grid-cols-2 gap-4">
-          <Card className="hover:border-primary/50 transition-colors">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <Camera className="w-5 h-5 text-primary" />
-                Register Face
-              </CardTitle>
-              <CardDescription>
-                Register a new face with 4 photos
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Button asChild className="w-full">
-                <Link to="/dashboard/face-register">
-                  Go to Registration
-                </Link>
-              </Button>
-            </CardContent>
-          </Card>
+        {/* Quick Actions - Role Based */}
+        {user?.role === 'student' && (
+          <div className="grid md:grid-cols-2 gap-4">
+            <Card className="hover:border-primary/50 transition-colors">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Camera className="w-5 h-5 text-primary" />
+                  Register Face
+                </CardTitle>
+                <CardDescription>
+                  Register a new face with 4 photos
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Button asChild className="w-full">
+                  <Link to="/dashboard/face-register">
+                    Go to Registration
+                  </Link>
+                </Button>
+              </CardContent>
+            </Card>
 
-          <Card className="hover:border-primary/50 transition-colors">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2">
-                <CheckCircle className="w-5 h-5 text-primary" />
-                Mark Attendance
-              </CardTitle>
-              <CardDescription>
-                Verify face and mark attendance
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Button asChild className="w-full">
-                <Link to="/dashboard/attendance">
+            <Card className="hover:border-primary/50 transition-colors">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <CheckCircle className="w-5 h-5 text-primary" />
                   Mark Attendance
-                </Link>
-              </Button>
-            </CardContent>
-          </Card>
-        </div>
+                </CardTitle>
+                <CardDescription>
+                  Verify face and mark attendance
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Button asChild className="w-full">
+                  <Link to="/dashboard/attendance">
+                    Mark Attendance
+                  </Link>
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+
+        {user?.role === 'teacher' && (
+          <div className="grid md:grid-cols-2 gap-4">
+            <Card className="hover:border-primary/50 transition-colors">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <ClipboardList className="w-5 h-5 text-primary" />
+                  View Attendance
+                </CardTitle>
+                <CardDescription>
+                  View all student attendance records
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Button asChild className="w-full">
+                  <Link to="/dashboard/teacher/attendance">
+                    View Records
+                  </Link>
+                </Button>
+              </CardContent>
+            </Card>
+
+            <Card className="hover:border-primary/50 transition-colors">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Clock className="w-5 h-5 text-primary" />
+                  Attendance History
+                </CardTitle>
+                <CardDescription>
+                  View complete attendance history
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Button asChild className="w-full">
+                  <Link to="/dashboard/history">
+                    View History
+                  </Link>
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
+        )}
+
+        {user?.role === 'admin' && (
+          <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <Card className="hover:border-primary/50 transition-colors">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Users className="w-5 h-5 text-primary" />
+                  Students
+                </CardTitle>
+                <CardDescription>Manage student accounts</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Button asChild className="w-full" size="sm">
+                  <Link to="/dashboard/admin/students">Manage</Link>
+                </Button>
+              </CardContent>
+            </Card>
+
+            <Card className="hover:border-primary/50 transition-colors">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <UserCog className="w-5 h-5 text-primary" />
+                  Teachers
+                </CardTitle>
+                <CardDescription>Manage teacher accounts</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Button asChild className="w-full" size="sm">
+                  <Link to="/dashboard/admin/teachers">Manage</Link>
+                </Button>
+              </CardContent>
+            </Card>
+
+            <Card className="hover:border-primary/50 transition-colors">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <GraduationCap className="w-5 h-5 text-primary" />
+                  Majors
+                </CardTitle>
+                <CardDescription>Manage academic majors</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Button asChild className="w-full" size="sm">
+                  <Link to="/dashboard/admin/majors">Manage</Link>
+                </Button>
+              </CardContent>
+            </Card>
+
+            <Card className="hover:border-primary/50 transition-colors">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <BookOpen className="w-5 h-5 text-primary" />
+                  Subjects
+                </CardTitle>
+                <CardDescription>Manage course subjects</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <Button asChild className="w-full" size="sm">
+                  <Link to="/dashboard/admin/subjects">Manage</Link>
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
+        )}
 
         {/* Stats */}
         <div className="grid md:grid-cols-2 gap-4">

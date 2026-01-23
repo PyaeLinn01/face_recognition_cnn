@@ -11,12 +11,17 @@ import Dashboard from "./pages/Dashboard";
 import FaceRegister from "./pages/FaceRegister";
 import MarkAttendance from "./pages/MarkAttendance";
 import AttendanceHistory from "./pages/AttendanceHistory";
+import AdminMajors from "./pages/admin/Majors";
+import AdminSubjects from "./pages/admin/Subjects";
+import AdminTeachers from "./pages/admin/Teachers";
+import AdminStudents from "./pages/admin/Students";
+import TeacherAttendance from "./pages/teacher/TeacherAttendance";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
 
 // Protected route wrapper
-function ProtectedRoute({ children }: { children: React.ReactNode }) {
+function ProtectedRoute({ children, allowedRoles }: { children: React.ReactNode; allowedRoles?: string[] }) {
   const { user, loading } = useAuth();
   
   if (loading) {
@@ -29,6 +34,11 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   
   if (!user) {
     return <Navigate to="/login" replace />;
+  }
+  
+  // Check role if specified
+  if (allowedRoles && !allowedRoles.includes(user.role)) {
+    return <Navigate to="/dashboard" replace />;
   }
   
   return <>{children}</>;
@@ -60,11 +70,22 @@ const AppRoutes = () => (
     <Route path="/login" element={<PublicRoute><Login /></PublicRoute>} />
     <Route path="/signup" element={<PublicRoute><Signup /></PublicRoute>} />
     
-    {/* Protected routes */}
+    {/* Protected routes - All roles */}
     <Route path="/dashboard" element={<ProtectedRoute><Dashboard /></ProtectedRoute>} />
-    <Route path="/dashboard/face-register" element={<ProtectedRoute><FaceRegister /></ProtectedRoute>} />
-    <Route path="/dashboard/attendance" element={<ProtectedRoute><MarkAttendance /></ProtectedRoute>} />
     <Route path="/dashboard/history" element={<ProtectedRoute><AttendanceHistory /></ProtectedRoute>} />
+    
+    {/* Student routes */}
+    <Route path="/dashboard/face-register" element={<ProtectedRoute allowedRoles={['student']}><FaceRegister /></ProtectedRoute>} />
+    <Route path="/dashboard/attendance" element={<ProtectedRoute allowedRoles={['student']}><MarkAttendance /></ProtectedRoute>} />
+    
+    {/* Teacher routes */}
+    <Route path="/dashboard/teacher/attendance" element={<ProtectedRoute allowedRoles={['teacher', 'admin']}><TeacherAttendance /></ProtectedRoute>} />
+    
+    {/* Admin routes */}
+    <Route path="/dashboard/admin/majors" element={<ProtectedRoute allowedRoles={['admin']}><AdminMajors /></ProtectedRoute>} />
+    <Route path="/dashboard/admin/subjects" element={<ProtectedRoute allowedRoles={['admin']}><AdminSubjects /></ProtectedRoute>} />
+    <Route path="/dashboard/admin/teachers" element={<ProtectedRoute allowedRoles={['admin']}><AdminTeachers /></ProtectedRoute>} />
+    <Route path="/dashboard/admin/students" element={<ProtectedRoute allowedRoles={['admin']}><AdminStudents /></ProtectedRoute>} />
     
     {/* Catch-all route */}
     <Route path="*" element={<NotFound />} />

@@ -29,6 +29,7 @@ export interface User {
   id: string;
   email: string;
   name: string;
+  role: 'student' | 'teacher' | 'admin';
 }
 
 // Attendance record type
@@ -38,6 +39,39 @@ export interface AttendanceRecord {
   entered_name: string;
   matched_identity: string;
   distance: number;
+}
+
+// Admin types
+export interface Major {
+  id: string;
+  name: string;
+  description: string;
+}
+
+export interface Subject {
+  id: string;
+  name: string;
+  code: string;
+}
+
+export interface Teacher {
+  id: string;
+  name: string;
+  email: string;
+}
+
+export interface Student {
+  id: string;
+  name: string;
+  email: string;
+  face_registered: boolean;
+  face_count: number;
+}
+
+export interface AttendanceStats {
+  total_records: number;
+  unique_students: number;
+  today_count: number;
 }
 
 export const faceAPI = {
@@ -171,6 +205,110 @@ export const faceAPI = {
     } catch (error) {
       throw error;
     }
+  },
+
+  // ==================== ADMIN API ====================
+
+  /**
+   * Get all majors
+   */
+  async getMajors(): Promise<Major[]> {
+    const response = await apiClient.get('/admin/majors');
+    return response.data.majors;
+  },
+
+  /**
+   * Create a major
+   */
+  async createMajor(name: string, description: string): Promise<Major> {
+    const response = await apiClient.post('/admin/majors', { name, description });
+    return response.data.major;
+  },
+
+  /**
+   * Delete a major
+   */
+  async deleteMajor(majorId: string): Promise<void> {
+    await apiClient.delete(`/admin/majors/${majorId}`);
+  },
+
+  /**
+   * Get all subjects
+   */
+  async getSubjects(): Promise<Subject[]> {
+    const response = await apiClient.get('/admin/subjects');
+    return response.data.subjects;
+  },
+
+  /**
+   * Create a subject
+   */
+  async createSubject(name: string, code: string): Promise<Subject> {
+    const response = await apiClient.post('/admin/subjects', { name, code });
+    return response.data.subject;
+  },
+
+  /**
+   * Delete a subject
+   */
+  async deleteSubject(subjectId: string): Promise<void> {
+    await apiClient.delete(`/admin/subjects/${subjectId}`);
+  },
+
+  /**
+   * Get all teachers
+   */
+  async getTeachers(): Promise<Teacher[]> {
+    const response = await apiClient.get('/admin/teachers');
+    return response.data.teachers;
+  },
+
+  /**
+   * Create a teacher
+   */
+  async createTeacher(name: string, email: string, password: string): Promise<Teacher> {
+    const response = await apiClient.post('/admin/teachers', { name, email, password });
+    return response.data.teacher;
+  },
+
+  /**
+   * Delete a teacher
+   */
+  async deleteTeacher(teacherId: string): Promise<void> {
+    await apiClient.delete(`/admin/teachers/${teacherId}`);
+  },
+
+  /**
+   * Get all students
+   */
+  async getStudents(): Promise<Student[]> {
+    const response = await apiClient.get('/admin/students');
+    return response.data.students;
+  },
+
+  /**
+   * Delete a student
+   */
+  async deleteStudent(studentId: string): Promise<void> {
+    await apiClient.delete(`/admin/students/${studentId}`);
+  },
+
+  // ==================== TEACHER API ====================
+
+  /**
+   * Get all attendance records (for teachers)
+   */
+  async getAllAttendance(): Promise<AttendanceRecord[]> {
+    const response = await apiClient.get('/teacher/attendance');
+    return response.data.records;
+  },
+
+  /**
+   * Get attendance statistics
+   */
+  async getAttendanceStats(): Promise<AttendanceStats> {
+    const response = await apiClient.get('/teacher/attendance/stats');
+    return response.data;
   },
 };
 

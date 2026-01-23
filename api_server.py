@@ -755,9 +755,44 @@ def reload_database():
 
 # ==================== AUTH ENDPOINTS ====================
 
+def init_default_users():
+    """Create default admin and teacher accounts if they don't exist."""
+    import hashlib
+    collection = get_mongodb_collection("users")
+    
+    default_users = [
+        {
+            "email": "admin@gmail.com",
+            "password": "123456",
+            "name": "Admin User",
+            "role": "admin"
+        },
+        {
+            "email": "teacher@gmail.com",
+            "password": "123456",
+            "name": "Teacher User",
+            "role": "teacher"
+        }
+    ]
+    
+    for user_data in default_users:
+        existing = collection.find_one({"email": user_data["email"]})
+        if not existing:
+            password_hash = hashlib.sha256(user_data["password"].encode()).hexdigest()
+            doc = {
+                "email": user_data["email"],
+                "password_hash": password_hash,
+                "name": user_data["name"],
+                "role": user_data["role"],
+                "created_at": datetime.now(),
+            }
+            collection.insert_one(doc)
+            print(f"Created default {user_data['role']} account: {user_data['email']}")
+
+
 @app.route('/api/v1/auth/signup', methods=['POST'])
 def signup():
-    """Register a new user."""
+    """Register a new user (students only via signup)."""
     try:
         data = request.json
         email = data.get("email", "").strip().lower()
@@ -785,6 +820,7 @@ def signup():
             "email": email,
             "password_hash": password_hash,
             "name": name,
+            "role": "student",  # Default role for signup
             "created_at": datetime.now(),
         }
         
@@ -796,6 +832,7 @@ def signup():
                 "id": str(result.inserted_id),
                 "email": email,
                 "name": name,
+                "role": "student",
             }
         }), 201
         
@@ -836,6 +873,7 @@ def login():
                 "id": str(user["_id"]),
                 "email": user["email"],
                 "name": user["name"],
+                "role": user.get("role", "student"),
             }
         }), 200
         
@@ -861,9 +899,262 @@ def get_user(user_id):
                 "id": str(user["_id"]),
                 "email": user["email"],
                 "name": user["name"],
+                "role": user.get("role", "student"),
             }
         }), 200
         
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ==================== ADMIN ENDPOINTS ====================
+
+@app.route('/api/v1/admin/majors', methods=['GET'])
+def get_majors():
+    """Get all majors."""
+    try:
+        collection = get_mongodb_collection("majors")
+        majors = list(collection.find())
+        return jsonify({
+            "majors": [{"id": str(m["_id"]), "name": m["name"], "description": m.get("description", "")} for m in majors]
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/v1/admin/majors', methods=['POST'])
+def create_major():
+    """Create a new major."""
+    try:
+        data = request.json
+        name = data.get("name", "").strip()
+        description = data.get("description", "").strip()
+        
+        if not name:
+            return jsonify({"error": "Name is required"}), 400
+        
+        collection = get_mongodb_collection("majors")
+        doc = {"name": name, "description": description, "created_at": datetime.now()}
+        result = collection.insert_one(doc)
+        
+        return jsonify({
+            "success": True,
+            "major": {"id": str(result.inserted_id), "name": name, "description": description}
+        }), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/v1/admin/majors/<major_id>', methods=['DELETE'])
+def delete_major(major_id):
+    """Delete a major."""
+    try:
+        from bson.objectid import ObjectId
+        collection = get_mongodb_collection("majors")
+        result = collection.delete_one({"_id": ObjectId(major_id)})
+        if result.deleted_count == 0:
+            return jsonify({"error": "Major not found"}), 404
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/v1/admin/subjects', methods=['GET'])
+def get_subjects():
+    """Get all subjects."""
+    try:
+        collection = get_mongodb_collection("subjects")
+        subjects = list(collection.find())
+        return jsonify({
+            "subjects": [{"id": str(s["_id"]), "name": s["name"], "code": s.get("code", "")} for s in subjects]
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/v1/admin/subjects', methods=['POST'])
+def create_subject():
+    """Create a new subject."""
+    try:
+        data = request.json
+        name = data.get("name", "").strip()
+        code = data.get("code", "").strip()
+        
+        if not name:
+            return jsonify({"error": "Name is required"}), 400
+        
+        collection = get_mongodb_collection("subjects")
+        doc = {"name": name, "code": code, "created_at": datetime.now()}
+        result = collection.insert_one(doc)
+        
+        return jsonify({
+            "success": True,
+            "subject": {"id": str(result.inserted_id), "name": name, "code": code}
+        }), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/v1/admin/subjects/<subject_id>', methods=['DELETE'])
+def delete_subject(subject_id):
+    """Delete a subject."""
+    try:
+        from bson.objectid import ObjectId
+        collection = get_mongodb_collection("subjects")
+        result = collection.delete_one({"_id": ObjectId(subject_id)})
+        if result.deleted_count == 0:
+            return jsonify({"error": "Subject not found"}), 404
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/v1/admin/teachers', methods=['GET'])
+def get_teachers():
+    """Get all teachers."""
+    try:
+        collection = get_mongodb_collection("users")
+        teachers = list(collection.find({"role": "teacher"}))
+        return jsonify({
+            "teachers": [{"id": str(t["_id"]), "name": t["name"], "email": t["email"]} for t in teachers]
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/v1/admin/teachers', methods=['POST'])
+def create_teacher():
+    """Create a new teacher account."""
+    try:
+        import hashlib
+        data = request.json
+        email = data.get("email", "").strip().lower()
+        password = data.get("password", "")
+        name = data.get("name", "").strip()
+        
+        if not email or not password or not name:
+            return jsonify({"error": "Email, password, and name are required"}), 400
+        
+        collection = get_mongodb_collection("users")
+        existing = collection.find_one({"email": email})
+        if existing:
+            return jsonify({"error": "User with this email already exists"}), 400
+        
+        password_hash = hashlib.sha256(password.encode()).hexdigest()
+        doc = {
+            "email": email,
+            "password_hash": password_hash,
+            "name": name,
+            "role": "teacher",
+            "created_at": datetime.now(),
+        }
+        result = collection.insert_one(doc)
+        
+        return jsonify({
+            "success": True,
+            "teacher": {"id": str(result.inserted_id), "name": name, "email": email}
+        }), 201
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/v1/admin/teachers/<teacher_id>', methods=['DELETE'])
+def delete_teacher(teacher_id):
+    """Delete a teacher."""
+    try:
+        from bson.objectid import ObjectId
+        collection = get_mongodb_collection("users")
+        result = collection.delete_one({"_id": ObjectId(teacher_id), "role": "teacher"})
+        if result.deleted_count == 0:
+            return jsonify({"error": "Teacher not found"}), 404
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/v1/admin/students', methods=['GET'])
+def get_students():
+    """Get all students."""
+    try:
+        collection = get_mongodb_collection("users")
+        students = list(collection.find({"role": "student"}))
+        
+        # Get face registration status
+        faces_collection = get_mongodb_collection("faces")
+        
+        result = []
+        for s in students:
+            face_count = faces_collection.count_documents({"name": s["name"]})
+            result.append({
+                "id": str(s["_id"]),
+                "name": s["name"],
+                "email": s["email"],
+                "face_registered": face_count > 0,
+                "face_count": face_count
+            })
+        
+        return jsonify({"students": result}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/v1/admin/students/<student_id>', methods=['DELETE'])
+def delete_student(student_id):
+    """Delete a student."""
+    try:
+        from bson.objectid import ObjectId
+        collection = get_mongodb_collection("users")
+        result = collection.delete_one({"_id": ObjectId(student_id), "role": "student"})
+        if result.deleted_count == 0:
+            return jsonify({"error": "Student not found"}), 404
+        return jsonify({"success": True}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ==================== TEACHER ENDPOINTS ====================
+
+@app.route('/api/v1/teacher/attendance', methods=['GET'])
+def get_all_attendance():
+    """Get all attendance records (for teachers)."""
+    try:
+        collection = get_mongodb_collection("attendance")
+        records = list(collection.find().sort("timestamp", -1).limit(500))
+        
+        return jsonify({
+            "records": [{
+                "id": str(r["_id"]),
+                "timestamp": r["timestamp"].isoformat() if isinstance(r["timestamp"], datetime) else r["timestamp"],
+                "entered_name": r.get("entered_name", ""),
+                "matched_identity": r.get("matched_identity", ""),
+                "distance": r.get("distance", 0),
+            } for r in records]
+        }), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/v1/teacher/attendance/stats', methods=['GET'])
+def get_attendance_stats():
+    """Get attendance statistics."""
+    try:
+        collection = get_mongodb_collection("attendance")
+        
+        # Get total records
+        total = collection.count_documents({})
+        
+        # Get unique students
+        unique_students = len(collection.distinct("matched_identity"))
+        
+        # Get today's count
+        today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+        today_count = collection.count_documents({"timestamp": {"$gte": today}})
+        
+        return jsonify({
+            "total_records": total,
+            "unique_students": unique_students,
+            "today_count": today_count
+        }), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -877,6 +1168,12 @@ if __name__ == '__main__':
         print("Models loaded successfully!")
     except Exception as e:
         print(f"Warning: Could not pre-load models: {e}")
+    
+    # Initialize default admin/teacher accounts
+    try:
+        init_default_users()
+    except Exception as e:
+        print(f"Warning: Could not init default users: {e}")
     
     # Development server
     # Using port 5001 to avoid conflict with macOS AirPlay Receiver on port 5000

@@ -1,4 +1,5 @@
 services:
+  # MongoDB Database
   mongodb:
     image: mongo:6.0.9
     container_name: face-attendance-mongodb
@@ -18,9 +19,47 @@ services:
       retries: 5
       start_period: 10s
 
+  # Python Flask API Backend
+  api-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: face-attendance-api
+    restart: unless-stopped
+    ports:
+      - "5001:5001"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    environment:
+      - MONGODB_CONNECTION_STRING=mongodb://mongodb:27017/
+      - MONGODB_DATABASE_NAME=face_attendance
+      - API_PORT=5001
+    volumes:
+      - ./images:/app/images
+      - ./weights:/app/weights
+      - ./datasets:/app/datasets
+    command: python3 api_server.py
+
+  # React Frontend (Vite dev server)
+  frontend:
+    build:
+      context: ./face-attend-main
+      dockerfile: Dockerfile.frontend
+    container_name: face-attendance-frontend
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    depends_on:
+      - api-server
+    environment:
+      - VITE_API_URL=http://localhost:5001/api/v1
+    command: npm run dev -- --host 0.0.0.0 --port 8080
+
+  # Optional: Streamlit app (legacy)
   streamlit-app:
     build: .
-    container_name: face-attendance-app
+    container_name: face-attendance-streamlit
     restart: unless-stopped
     ports:
       - "8501:8501"
@@ -34,6 +73,8 @@ services:
       - ./images:/app/images
       - ./weights:/app/weights
     command: streamlit run attend_app.py --server.port=8501 --server.address=0.0.0.0
+    profiles:
+      - streamlit
 
 volumes:
   mongodb_data:

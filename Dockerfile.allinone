@@ -1,0 +1,93 @@
+# All-in-One Dockerfile: Python API + React Frontend (MongoDB runs separately)
+FROM ubuntu:22.04
+
+# Prevent interactive prompts
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Set working directory
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    # Python dependencies
+    python3 \
+    python3-pip \
+    python3-dev \
+    # Node.js
+    curl \
+    # OpenCV/ML dependencies
+    libgl1 \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    # Build tools
+    gcc \
+    g++ \
+    make \
+    # Supervisor to run multiple services
+    supervisor \
+    && rm -rf /var/lib/apt/lists/*
+
+
+# Install Node.js 20
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
+# Upgrade pip
+RUN pip3 install --upgrade pip setuptools wheel
+
+# Copy Python requirements and install
+COPY requirements.txt .
+RUN pip3 install --no-cache-dir -r requirements.txt
+
+# Copy backend files
+COPY api_server.py .
+COPY fr_utils.py .
+COPY fr.py .
+COPY inception_blocks_v2.py .
+COPY mlflow_utils.py .
+COPY nn4.small2.v7.h5 .
+COPY weights/ ./weights/
+
+# Copy frontend and install dependencies
+COPY face-attend-main/ ./frontend/
+WORKDIR /app/frontend
+RUN npm install
+RUN npm run build
+
+# Back to app directory
+WORKDIR /app
+
+# Create supervisor config for API and Frontend
+RUN mkdir -p /etc/supervisor/conf.d
+RUN cat > /etc/supervisor/conf.d/supervisord.conf << 'EOF'
+[supervisord]
+nodaemon=true
+user=root
+
+[program:api-server]
+command=python3 /app/api_server.py
+directory=/app
+autostart=true
+autorestart=true
+stdout_logfile=/var/log/supervisor/api.log
+stderr_logfile=/var/log/supervisor/api_err.log
+
+[program:frontend]
+command=npm run preview -- --host 0.0.0.0 --port 8080
+directory=/app/frontend
+autostart=true
+autorestart=true
+stdout_logfile=/var/log/supervisor/frontend.log
+stderr_logfile=/var/log/supervisor/frontend_err.log
+environment=VITE_API_URL="http://localhost:5001/api/v1"
+EOF
+
+# Expose ports (API + Frontend only, MongoDB runs separately)
+EXPOSE 8080 5001
+
+# Start supervisor (runs API server and frontend)
+CMD ["/usr/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]

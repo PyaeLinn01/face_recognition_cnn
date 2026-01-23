@@ -87,7 +87,7 @@ export const faceAPI = {
   /**
    * Verify a face against registered identities
    */
-  async verifyFace(imageBase64: string, threshold: number = 0.7, useDetection: boolean = true) {
+  async verifyFace(imageBase64: string, threshold: number = 0.5, useDetection: boolean = true) {
     try {
       const response = await apiClient.post('/verify-face', {
         image_base64: imageBase64,
@@ -147,7 +147,7 @@ export const faceAPI = {
    * Detect faces in an image (for real-time overlay)
    * @param identify - Whether to also identify the person (default: true for attendance, false for registration)
    */
-  async detectFace(imageBase64: string, minConfidence: number = 0.90, identify: boolean = true, threshold: number = 0.7) {
+  async detectFace(imageBase64: string, minConfidence: number = 0.90, identify: boolean = true, threshold: number = 0.5) {
     try {
       const response = await apiClient.post('/detect-face', {
         image_base64: imageBase64,

@@ -137,7 +137,7 @@ export default function AttendanceHistory() {
                         Distance: <span className="text-primary">{record.distance.toFixed(4)}</span>
                       </p>
                       <p className="text-xs text-muted-foreground">
-                        {record.distance < 0.5 ? 'High match' : record.distance < 0.7 ? 'Good match' : 'Low match'}
+                        {record.distance < 0.3 ? 'High match' : record.distance < 0.5 ? 'Good match' : 'Unknown'}
                       </p>
                     </div>
                   </motion.div>

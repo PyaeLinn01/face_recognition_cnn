@@ -246,13 +246,13 @@ export default function MarkAttendance() {
       const imageBase64 = imageDataUrl.split(',')[1];
 
       // Send to backend for verification
-      const verifyResult = await faceAPI.verifyFace(imageBase64, 0.7, true);
+      const verifyResult = await faceAPI.verifyFace(imageBase64, 0.5, true);
 
       setResult({
         matched: verifyResult.matched,
         identity: verifyResult.identity || 'Unknown',
         distance: verifyResult.distance || 999,
-        threshold: verifyResult.threshold || 0.7,
+        threshold: verifyResult.threshold || 0.5,
         face_detected: verifyResult.face_detected,
         face_confidence: verifyResult.face_confidence,
       });

@@ -419,7 +419,7 @@ def detect_face():
         image_base64 = data.get("image_base64")
         min_confidence = data.get("min_confidence", 0.90)
         identify = data.get("identify", True)  # Default to identify
-        threshold = data.get("threshold", 0.7)  # Distance threshold for matching
+        threshold = data.get("threshold", 0.5)  # Distance threshold for matching
         
         if not image_base64:
             return jsonify({"error": "Missing image"}), 400
@@ -595,7 +595,7 @@ def verify_face():
     try:
         data = request.json
         image_base64 = data.get("image_base64")
-        threshold = data.get("threshold", 0.7)
+        threshold = data.get("threshold", 0.5)
         use_detection = data.get("use_detection", True)
         
         if not image_base64:

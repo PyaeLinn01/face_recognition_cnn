@@ -34,7 +34,8 @@ COPY . .
 # Set default MongoDB connection for Docker (connects to host MongoDB)
 # On macOS/Windows, use host.docker.internal to access host machine
 # On Linux, use host.docker.internal or --network host when running docker
-ENV MONGODB_CONNECTION_STRING=mongodb://host.docker.internal:27017/
+# local mongodb 
+ENV MONGODB_CONNECTION_STRING=mongodb://host.docker.internal:27017/ 
 ENV MONGODB_DATABASE_NAME=face_attendance
 
 # MLflow tracking URI (file-based by default, can be overridden)

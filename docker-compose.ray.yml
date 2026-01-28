@@ -1,5 +1,4 @@
 services:
-  # MongoDB Database
   mongodb:
     image: mongo:8.0
     container_name: face-attendance-mongodb
@@ -18,45 +17,9 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+    networks:
+      - face_recognition_network
 
-  # Python Flask API Backend
-  api-server:
-    build:
-      context: .
-      dockerfile: Dockerfile.api
-    container_name: face-attendance-api
-    restart: unless-stopped
-    ports:
-      - "5001:5001"
-    depends_on:
-      mongodb:
-        condition: service_healthy
-    environment:
-      - MONGODB_CONNECTION_STRING=mongodb://mongodb:27017/
-      - MONGODB_DATABASE_NAME=face_attendance
-      - API_PORT=5001
-    volumes:
-      - ./images:/app/images
-      - ./weights:/app/weights
-      - ./datasets:/app/datasets
-    command: python3 api_server.py
-
-  # React Frontend (Vite dev server)
-  frontend:
-    build:
-      context: ./face-attend-main
-      dockerfile: Dockerfile.frontend
-    container_name: face-attendance-frontend
-    restart: unless-stopped
-    ports:
-      - "8080:8080"
-    depends_on:
-      - api-server
-    environment:
-      - VITE_API_URL=http://localhost:5001/api/v1
-    command: npm run dev -- --host 0.0.0.0 --port 8080
-
-  # Optional: Streamlit app (legacy)
   ray-head:
     build:
       context: .
@@ -85,12 +48,13 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+    networks:
+      - face_recognition_network
 
   ray-worker:
     build:
       context: .
       dockerfile: Dockerfile.ray
-    container_name: face-recognition-ray-worker
     restart: unless-stopped
     environment:
       - RAY_REDIS_ADDRESS=ray-head:6379
@@ -105,13 +69,15 @@ services:
       - ray-head
     deploy:
       replicas: 2
+    networks:
+      - face_recognition_network
 
-  streamlit-app:
+  streamlit-app-ray:
     build: .
-    container_name: face-attendance-streamlit
+    container_name: face-attendance-app-ray
     restart: unless-stopped
     ports:
-      - "8501:8501"
+      - "8502:8501"  # Different port to avoid conflict
     depends_on:
       mongodb:
         condition: service_healthy
@@ -121,15 +87,16 @@ services:
       - MONGODB_CONNECTION_STRING=mongodb://mongodb:27017/
       - MONGODB_DATABASE_NAME=face_attendance
       - RAY_HEAD_ADDRESS=ray-head:10001
+      - USE_RAY=True
     volumes:
       - ./images:/app/images
       - ./weights:/app/weights
       - ./datasets:/app/datasets
       - ./data:/app/data
       - ./mlruns:/app/mlruns
-    command: streamlit run attend_app.py --server.port=8501 --server.address=0.0.0.0
-    profiles:
-      - streamlit
+    command: streamlit run attend_app_ray.py --server.port=8501 --server.address=0.0.0.0
+    networks:
+      - face_recognition_network
 
   locust-master:
     image: locustio/locust:latest
@@ -142,10 +109,11 @@ services:
     command: ["--master", "--host=http://ray-head:8000", "-f", "/mnt/locust/locustfile.py"]
     depends_on:
       - ray-head
+    networks:
+      - face_recognition_network
 
   locust-worker:
     image: locustio/locust:latest
-    container_name: face-recognition-locust-worker
     volumes:
       - ./locustfile_ray.py:/mnt/locust/locustfile.py
     command: ["--worker", "--master-host=locust-master", "-f", "/mnt/locust/locustfile.py"]
@@ -153,8 +121,14 @@ services:
       - locust-master
     deploy:
       replicas: 3
+    networks:
+      - face_recognition_network
 
 volumes:
   mongodb_data:
   mongodb_config:
   ray_logs:
+
+networks:
+  face_recognition_network:
+    driver: bridge

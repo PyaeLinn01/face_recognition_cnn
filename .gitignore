@@ -6,17 +6,9 @@ images/
 .cursorrules_backup
 .cursorrules_enhanced
 
-# Project-specific Documentation (keep only README.md)
-cursor.md
-DOCKER_GUIDE.md
-DVC_MONGODB_GUIDE.md
-HOW_TO_VIEW_EVERYTHING.md
-INTEGRATION_SUMMARY.md
-MLFLOW_DVC_GUIDE.md
-QUICK_START_MLFLOW_DVC.md
-QUICK_VIEW_GUIDE.md
-VIEW_RESULTS_GUIDE.md
-WHERE_TO_FIND.md
+# All Markdown files except README.md
+*.md
+!README.md
 
 # Python Standard Ignores
 __pycache__/

@@ -1,0 +1,47 @@
+# API Server Dockerfile
+FROM python:3.10-slim
+
+WORKDIR /app
+
+# Install system dependencies for OpenCV, MTCNN, TensorFlow
+RUN apt-get update && apt-get install -y \
+    libgl1 \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    gcc \
+    g++ \
+    make \
+    python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Upgrade pip
+RUN pip install --upgrade pip setuptools wheel
+
+# Copy requirements and install
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY api_server.py .
+COPY fr_utils.py .
+COPY fr.py .
+COPY inception_blocks_v2.py .
+COPY mlflow_utils.py .
+COPY nn4.small2.v7.h5 .
+
+# Copy weights directory
+COPY weights/ ./weights/
+
+# Environment variables
+ENV MONGODB_CONNECTION_STRING=mongodb://mongodb:27017/
+ENV MONGODB_DATABASE_NAME=face_attendance
+ENV API_PORT=5001
+
+# Expose API port
+EXPOSE 5001
+
+# Run the API server
+CMD ["python3", "api_server.py"]

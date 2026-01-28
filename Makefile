@@ -1,89 +1,125 @@
 .PHONY: help build run stop logs clean install run-local test docker-shell
 
 # Variables
-IMAGE_NAME = face-recognition-cnn
-CONTAINER_NAME = face-recognition
-PORT = 8501
+IMAGE_NAME = face-attendance-allinone
+CONTAINER_NAME = face-attendance
+PORT_FRONTEND = 8080
+PORT_API = 5001
+
 
 # Default target
 help:
 	@echo "Face Recognition CNN - Makefile Commands"
 	@echo "========================================"
 	@echo ""
-	@echo "Docker Commands:"
-	@echo "  make build          - Build Docker image"
-	@echo "  make run            - Run Docker container"
-	@echo "  make stop           - Stop running container"
+	@echo "🐳 Docker (All-in-One):"
+	@echo "  make build          - Build the all-in-one Docker image"
+	@echo "  make run            - Run the container"
+	@echo "  make start          - Build and run (one command)"
+	@echo "  make stop           - Stop the container"
+	@echo "  make restart        - Restart the container"
 	@echo "  make logs           - View container logs"
-	@echo "  make restart        - Restart container"
-	@echo "  make docker-shell   - Open shell in running container"
+	@echo "  make shell          - Open shell in container"
 	@echo "  make clean          - Remove container and image"
 	@echo ""
-	@echo "Local Development:"
-	@echo "  make install        - Install Python dependencies locally"
-	@echo "  make run-local      - Run app locally (without Docker)"
+	@echo "💻 Local Development (no Docker):"
+	@echo "  make install        - Install all dependencies"
+	@echo "  make run-api        - Run API server locally"
+	@echo "  make run-frontend   - Run frontend locally"
+	@echo "  make run-local      - Run Streamlit app locally"
 	@echo ""
-	@echo "Utility:"
-	@echo "  make clean-cache    - Clean Python cache files"
-	@echo "  make clean-all      - Clean everything (cache, containers, images)"
+	@echo "📋 Default Accounts:"
+	@echo "  Admin:   admin@gmail.com / 123456"
+	@echo "  Teacher: teacher@gmail.com / 123456"
+	@echo ""
+	@echo "🌐 Access (after running):"
+	@echo "  Frontend: http://localhost:8080"
+	@echo "  API:      http://localhost:5001"
+	
 
-# Docker Commands
+# ==================== DOCKER ALL-IN-ONE ====================
+
+# Build the all-in-one image
 build:
-	@echo "Building Docker image: $(IMAGE_NAME)"
-	docker build -t $(IMAGE_NAME) .
+	@echo "🔨 Building all-in-one Docker image..."
+	docker build -f Dockerfile.allinone -t $(IMAGE_NAME) .
+	@echo "✅ Build complete!"
 
+# Run the container
 run:
-	@echo "Running container: $(CONTAINER_NAME) on port $(PORT)"
-	@docker run -d -p $(PORT):8501 --name $(CONTAINER_NAME) $(IMAGE_NAME) || \
-		docker start $(CONTAINER_NAME)
-	@echo "Container is running. Access the app at http://localhost:$(PORT)"
+	@echo "🚀 Starting container..."
+	@docker run -d \
+		-p $(PORT_FRONTEND):8080 \
+		-p $(PORT_API):5001 \
+		-e MONGODB_CONNECTION_STRING=mongodb://host.docker.internal:27017/ \
+		-v $(PWD)/images:/app/images \
+		--name $(CONTAINER_NAME) \
+		$(IMAGE_NAME) 2>/dev/null || docker start $(CONTAINER_NAME)
+	@echo ""
+	@echo "✅ Container started!"
+	@echo "   Frontend: http://localhost:$(PORT_FRONTEND)"
+	@echo "   API:      http://localhost:$(PORT_API)"
+	@echo ""
+	@echo "⚠️  MongoDB must be running separately on localhost:27017"
 
+# Build and run in one command
+start: build run
+	@echo "✅ Ready to use!"
+
+# Stop the container
 stop:
-	@echo "Stopping container: $(CONTAINER_NAME)"
+	@echo "🛑 Stopping container..."
 	@docker stop $(CONTAINER_NAME) 2>/dev/null || echo "Container not running"
+	@echo "✅ Stopped"
 
-logs:
-	@echo "Viewing logs for: $(CONTAINER_NAME)"
-	@docker logs -f $(CONTAINER_NAME)
-
+# Restart
 restart: stop run
 
-docker-shell:
-	@echo "Opening shell in container: $(CONTAINER_NAME)"
+# View logs
+logs:
+	@docker logs -f $(CONTAINER_NAME)
+
+# Shell access
+shell:
 	@docker exec -it $(CONTAINER_NAME) /bin/bash
 
 # Clean up
 clean:
-	@echo "Removing container and image..."
+	@echo "🧹 Cleaning up..."
 	@docker stop $(CONTAINER_NAME) 2>/dev/null || true
 	@docker rm $(CONTAINER_NAME) 2>/dev/null || true
 	@docker rmi $(IMAGE_NAME) 2>/dev/null || true
-	@echo "Cleanup complete"
+	@echo "✅ Cleanup complete"
 
-clean-cache:
-	@echo "Cleaning Python cache files..."
-	@find . -type d -name "__pycache__" -exec rm -r {} + 2>/dev/null || true
-	@find . -type f -name "*.pyc" -delete 2>/dev/null || true
-	@find . -type f -name "*.pyo" -delete 2>/dev/null || true
-	@echo "Cache cleaned"
+# ==================== LOCAL DEVELOPMENT ====================
 
-clean-all: clean clean-cache
-	@echo "All cleanup complete"
-
-# Local Development
+# Install dependencies
 install:
-	@echo "Installing Python dependencies..."
+	@echo "📦 Installing Python dependencies..."
 	pip install --upgrade pip setuptools wheel
 	pip install -r requirements.txt
-	@echo "Dependencies installed"
+	@echo "📦 Installing frontend dependencies..."
+	cd face-attend-main && npm install
+	@echo "✅ Dependencies installed"
 
+# Run API locally
+run-api:
+	@echo "🐍 Running API server locally..."
+	python3 api_server.py
+
+# Run frontend locally
+run-frontend:
+	@echo "⚛️ Running frontend locally..."
+	cd face-attend-main && npm run dev
+
+# Run Streamlit locally
 run-local:
-	@echo "Running app locally..."
-	streamlit run app.py --server.port=$(PORT) --server.address=0.0.0.0
+	@echo "📊 Running Streamlit app locally..."
+	streamlit run attend_app.py --server.port=8501 --server.address=0.0.0.0
 
-# Rebuild and run (useful for development)
-rebuild: clean build run
-
-# Quick start (build and run in one command)
-start: build run
-	@echo "Build and run complete. Access at http://localhost:$(PORT)"
+# Clean Python cache
+clean-cache:
+	@echo "🧹 Cleaning Python cache files..."
+	@find . -type d -name "__pycache__" -exec rm -r {} + 2>/dev/null || true
+	@find . -type f -name "*.pyc" -delete 2>/dev/null || true
+	@echo "✅ Cache cleaned"

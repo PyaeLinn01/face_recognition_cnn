@@ -1,0 +1,14 @@
+artifact_uri: file:///Users/pyaelinn/face_recon/face_recognition_cnn/mlruns/0/b38cd42de280473f842a366395fb235d/artifacts
+end_time: null
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: b38cd42de280473f842a366395fb235d
+run_name: nebulous-toad-114
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1768576473649
+status: 1
+tags: []
+user_id: pyaelinn

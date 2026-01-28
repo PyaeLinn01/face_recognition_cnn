@@ -1,0 +1,14 @@
+artifact_uri: file:///Users/pyaelinn/face_recon/face_recognition_cnn/mlruns/0/992469b7b9214b33b9c9a1f03fe5c9e7/artifacts
+end_time: null
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 992469b7b9214b33b9c9a1f03fe5c9e7
+run_name: defiant-shoat-259
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1768576473317
+status: 1
+tags: []
+user_id: pyaelinn

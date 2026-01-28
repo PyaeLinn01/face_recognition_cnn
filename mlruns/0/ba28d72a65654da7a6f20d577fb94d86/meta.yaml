@@ -1,0 +1,14 @@
+artifact_uri: file:///Users/pyaelinn/face_recon/face_recognition_cnn/mlruns/0/ba28d72a65654da7a6f20d577fb94d86/artifacts
+end_time: null
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: ba28d72a65654da7a6f20d577fb94d86
+run_name: mysterious-snake-166
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1768576523114
+status: 1
+tags: []
+user_id: pyaelinn

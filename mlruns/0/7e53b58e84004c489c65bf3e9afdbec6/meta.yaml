@@ -1,0 +1,14 @@
+artifact_uri: file:///Users/pyaelinn/face_recon/face_recognition_cnn/mlruns/0/7e53b58e84004c489c65bf3e9afdbec6/artifacts
+end_time: null
+entry_point_name: ''
+experiment_id: '0'
+lifecycle_stage: active
+run_id: 7e53b58e84004c489c65bf3e9afdbec6
+run_name: enchanting-wren-3
+source_name: ''
+source_type: 4
+source_version: ''
+start_time: 1768576457963
+status: 1
+tags: []
+user_id: pyaelinn

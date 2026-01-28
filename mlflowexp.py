@@ -6,7 +6,7 @@ This module provides experiment tracking for:
 - MTCNN: Face detection
 
 Run this script to log model experiments to MLflow:
-    python mlflow.py
+    python mlflowexp.py
 
 View results:
     mlflow ui --port 5000

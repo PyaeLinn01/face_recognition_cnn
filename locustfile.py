@@ -1,138 +1,160 @@
 """
-Locust load testing for Face Attendance Streamlit App.
-
-This file tests the Streamlit application's HTTP endpoints.
-Streamlit uses WebSocket for real-time updates, but we can still
-load test the initial page load and API endpoints.
+Locust load testing for Face Attendance Frontend (Vite) and Backend API.
 
 Usage:
-    # Start the Streamlit app first:
-    streamlit run attend_app.py --server.port 8501
+    # Frontend (Vite) is on http://localhost:8080
+    # Backend API is on http://localhost:5001
 
-    # Then run Locust:
-    locust -f locustfile.py --host=http://localhost:8501
+    locust -f locustfile.py
 
-    # Open browser to http://localhost:8089 for Locust UI
-    # Set number of users, spawn rate, and start swarming
-
-    # Or run headless:
-    locust -f locustfile.py --host=http://localhost:8501 --users 10 --spawn-rate 2 --run-time 60s --headless
+Environment variables:
+    FRONTEND_HOST=http://localhost:8080
+    BACKEND_HOST=http://localhost:5001
+    ADMIN_EMAIL=admin@gmail.com
+    ADMIN_PASSWORD=123456
+    TEACHER_EMAIL=teacher@gmail.com
+    TEACHER_PASSWORD=123456
 """
 
+import os
+import re
 import time
 import random
+from typing import List, Optional
 from locust import HttpUser, task, between, events
 
 
-class StreamlitUser(HttpUser):
-    """
-    Simulates users accessing the Face Attendance Streamlit app.
-    
-    Streamlit apps have specific endpoints:
-    - / : Main page (HTML)
-    - /_stcore/health : Health check endpoint
-    - /_stcore/stream : WebSocket for updates (not tested here)
-    - /static/* : Static assets
-    """
-    
-    # Wait between 1 and 3 seconds between tasks
+FRONTEND_HOST = os.getenv("FRONTEND_HOST", "http://localhost:8080")
+BACKEND_HOST = os.getenv("BACKEND_HOST", "http://localhost:5001")
+
+ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@gmail.com")
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "123456")
+TEACHER_EMAIL = os.getenv("TEACHER_EMAIL", "teacher@gmail.com")
+TEACHER_PASSWORD = os.getenv("TEACHER_PASSWORD", "123456")
+
+
+def _extract_asset_paths(html: str) -> List[str]:
+    """Extract /assets/* paths from HTML (Vite build)."""
+    return list(set(re.findall(r"/assets/[^\"'\s>]+", html)))
+
+
+class FrontendUser(HttpUser):
+    """Simulates users accessing the React frontend."""
+
+    host = FRONTEND_HOST
     wait_time = between(1, 3)
-    
+
     def on_start(self):
-        """Called when a simulated user starts."""
-        # Initial page load to establish session
-        self.client.get("/", name="/ (initial load)")
-    
-    @task(10)
-    def load_main_page(self):
-        """
-        Load the main Streamlit page.
-        This is the most common user action.
-        """
-        with self.client.get("/", catch_response=True, name="/ (main page)") as response:
+        self.asset_paths: List[str] = []
+        with self.client.get("/", catch_response=True, name="/ (initial load)") as response:
             if response.status_code == 200:
-                if "streamlit" in response.text.lower() or "face" in response.text.lower():
-                    response.success()
-                else:
-                    response.failure("Page loaded but content unexpected")
+                self.asset_paths = _extract_asset_paths(response.text)
+                response.success()
             else:
                 response.failure(f"Status code: {response.status_code}")
-    
-    @task(5)
-    def health_check(self):
-        """
-        Check Streamlit health endpoint.
-        Used by load balancers and monitoring.
-        """
-        with self.client.get("/_stcore/health", catch_response=True, name="/_stcore/health") as response:
+
+    @task(10)
+    def load_home(self):
+        with self.client.get("/", catch_response=True, name="/ (home)") as response:
             if response.status_code == 200:
                 response.success()
-            elif response.status_code == 404:
-                # Older Streamlit versions may not have this endpoint
-                response.success()
             else:
-                response.failure(f"Health check failed: {response.status_code}")
-    
-    @task(3)
-    def load_static_assets(self):
-        """
-        Simulate loading static assets that the browser would request.
-        """
-        static_paths = [
-            "/_stcore/host-config",
-            "/_stcore/allowed-message-origins",
-        ]
-        
-        path = random.choice(static_paths)
-        with self.client.get(path, catch_response=True, name=f"{path}") as response:
-            if response.status_code in [200, 404]:
-                response.success()
-            else:
-                response.failure(f"Unexpected status: {response.status_code}")
-    
+                response.failure(f"Status code: {response.status_code}")
+
+    @task(5)
+    def load_assets(self):
+        if not self.asset_paths:
+            self.client.get("/favicon.ico", name="/favicon.ico")
+            return
+        asset = random.choice(self.asset_paths)
+        self.client.get(asset, name="/assets/*")
+
     @task(2)
-    def simulate_page_interaction(self):
-        """
-        Simulate a user spending time on the page.
-        """
-        # Load main page
-        self.client.get("/", name="/ (interaction)")
-        
-        # Simulate user reading/interacting
+    def simulate_user_wait(self):
         time.sleep(random.uniform(0.5, 2.0))
-        
-        # Reload (simulating widget interaction which causes rerun)
-        self.client.get("/", name="/ (rerun)")
 
 
-# Event hooks for custom logging
+class BackendUser(HttpUser):
+    """Simulates users calling backend API endpoints."""
+
+    host = BACKEND_HOST
+    wait_time = between(1, 3)
+
+    def on_start(self):
+        self.user_id: Optional[str] = None
+        self._login_admin()
+
+    def _login_admin(self):
+        payload = {"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}
+        with self.client.post("/api/v1/auth/login", json=payload, name="POST /api/v1/auth/login") as response:
+            if response.status_code == 200:
+                data = response.json()
+                self.user_id = data.get("user", {}).get("id")
+                response.success()
+            else:
+                response.failure(f"Login failed: {response.status_code}")
+
+    @task(8)
+    def health_check(self):
+        self.client.get("/health", name="GET /health")
+
+    @task(6)
+    def list_majors(self):
+        self.client.get("/api/v1/admin/majors", name="GET /api/v1/admin/majors")
+
+    @task(6)
+    def list_subjects(self):
+        self.client.get("/api/v1/admin/subjects", name="GET /api/v1/admin/subjects")
+
+    @task(4)
+    def list_teachers(self):
+        self.client.get("/api/v1/admin/teachers", name="GET /api/v1/admin/teachers")
+
+    @task(4)
+    def list_students(self):
+        self.client.get("/api/v1/admin/students", name="GET /api/v1/admin/students")
+
+    @task(4)
+    def attendance_recent(self):
+        self.client.get("/api/v1/attendance/recent", name="GET /api/v1/attendance/recent")
+
+    @task(3)
+    def attendance_stats(self):
+        self.client.get("/api/v1/teacher/attendance/stats", name="GET /api/v1/teacher/attendance/stats")
+
+    @task(2)
+    def list_faces(self):
+        self.client.get("/api/v1/faces/list", name="GET /api/v1/faces/list")
+
+    @task(2)
+    def get_user_profile(self):
+        if not self.user_id:
+            return
+        self.client.get(f"/api/v1/auth/user/{self.user_id}", name="GET /api/v1/auth/user/:id")
+
+
 @events.request.add_listener
 def on_request(request_type, name, response_time, response_length, response, context, exception, **kwargs):
-    """Log slow requests for debugging."""
-    if response_time > 5000:  # More than 5 seconds
+    if response_time > 5000:
         print(f"SLOW REQUEST: {name} took {response_time}ms")
 
 
 @events.test_start.add_listener
 def on_test_start(environment, **kwargs):
-    """Called when load test starts."""
     print("=" * 60)
     print("Starting Face Attendance Load Test")
     print("=" * 60)
-    print(f"Target host: {environment.host}")
-    print("Make sure Streamlit app is running!")
+    print(f"Frontend host: {FRONTEND_HOST}")
+    print(f"Backend host: {BACKEND_HOST}")
     print("=" * 60)
 
 
-@events.test_stop.add_listener  
+@events.test_stop.add_listener
 def on_test_stop(environment, **kwargs):
-    """Called when load test stops."""
     print("=" * 60)
     print("Load Test Complete")
     print("=" * 60)
 
 
-# For running directly with: python locustfile.py
 if __name__ == "__main__":
-    import os
-    os.system("locust -f locustfile.py --host=http://localhost:8501")
+    os.system("locust -f locustfile.py")

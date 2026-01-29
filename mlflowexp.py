@@ -30,17 +30,144 @@ from typing import Dict, List, Tuple, Optional
 import tensorflow as tf
 from tensorflow.keras import backend as K
 
+# MongoDB imports
+try:
+    from pymongo import MongoClient
+    MONGODB_AVAILABLE = True
+except ImportError:
+    MONGODB_AVAILABLE = False
+    print("Warning: pymongo not available. Install with: pip install pymongo")
+
 # Local imports
-from fr_utils import load_weights_from_FaceNet, load_dataset, img_to_encoding
+from fr_utils import load_weights_from_FaceNet, load_dataset
 from inception_blocks_v2 import faceRecoModel
 
 # Set MLflow tracking URI (local directory)
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "file:./mlruns")
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
 
+# MongoDB Configuration
+MONGODB_CONNECTION_STRING = os.getenv(
+    "MONGODB_CONNECTION_STRING", 
+    "mongodb://localhost:27017/"
+)
+MONGODB_DATABASE_NAME = os.getenv(
+    "MONGODB_DATABASE_NAME",
+    "face_attendance"
+)
+
 # Constants
 TARGET_SIZE = (96, 96)
 EMBEDDING_SIZE = 128
+
+
+# ==================== MongoDB Helper Functions ====================
+
+def get_mongodb_client():
+    """Get MongoDB client."""
+    if not MONGODB_AVAILABLE:
+        raise RuntimeError("MongoDB not available - install pymongo")
+    return MongoClient(MONGODB_CONNECTION_STRING)
+
+
+def get_mongodb_collection(collection_name: str):
+    """Get MongoDB collection."""
+    client = get_mongodb_client()
+    db = client[MONGODB_DATABASE_NAME]
+    return db[collection_name]
+
+
+def load_faces_from_mongodb() -> Dict[str, List[np.ndarray]]:
+    """
+    Load face images from MongoDB.
+    
+    Returns:
+        Dictionary mapping user names to list of face images (as numpy arrays)
+    """
+    if not MONGODB_AVAILABLE:
+        print("MongoDB not available")
+        return {}
+    
+    try:
+        collection = get_mongodb_collection("face_images")
+        images_by_name = {}
+        
+        for doc in collection.find().sort("name", 1).sort("image_index", 1):
+            name = doc.get("name")
+            img_bytes = doc.get("image_bytes", b"")
+            
+            if not name or not img_bytes:
+                continue
+                
+            if name not in images_by_name:
+                images_by_name[name] = []
+            
+            # Decode image bytes to numpy array
+            try:
+                arr = np.frombuffer(img_bytes, dtype=np.uint8)
+                img_bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+                if img_bgr is not None:
+                    images_by_name[name].append(img_bgr)
+            except Exception as e:
+                print(f"Error decoding image for {name}: {e}")
+                continue
+        
+        print(f"Loaded {sum(len(v) for v in images_by_name.values())} images for {len(images_by_name)} identities from MongoDB")
+        return images_by_name
+        
+    except Exception as e:
+        print(f"Error loading faces from MongoDB: {e}")
+        return {}
+
+
+def load_users_from_mongodb() -> List[Dict]:
+    """Load user data from MongoDB."""
+    if not MONGODB_AVAILABLE:
+        return []
+    
+    try:
+        collection = get_mongodb_collection("users")
+        users = list(collection.find({}, {"password": 0}))  # Exclude password
+        return users
+    except Exception as e:
+        print(f"Error loading users from MongoDB: {e}")
+        return []
+
+
+def load_attendance_from_mongodb() -> List[Dict]:
+    """Load attendance records from MongoDB."""
+    if not MONGODB_AVAILABLE:
+        return []
+    
+    try:
+        collection = get_mongodb_collection("attendance")
+        records = list(collection.find().sort("timestamp", -1).limit(1000))
+        return records
+    except Exception as e:
+        print(f"Error loading attendance from MongoDB: {e}")
+        return []
+
+
+def get_mongodb_stats() -> Dict:
+    """Get MongoDB collection statistics."""
+    stats = {}
+    try:
+        client = get_mongodb_client()
+        db = client[MONGODB_DATABASE_NAME]
+        
+        stats["face_images_count"] = db["face_images"].count_documents({})
+        stats["users_count"] = db["users"].count_documents({})
+        stats["attendance_count"] = db["attendance"].count_documents({})
+        
+        # Count unique identities in face_images
+        pipeline = [{"$group": {"_id": "$name"}}, {"$count": "unique_names"}]
+        result = list(db["face_images"].aggregate(pipeline))
+        stats["unique_identities"] = result[0]["unique_names"] if result else 0
+        
+    except Exception as e:
+        print(f"Error getting MongoDB stats: {e}")
+    
+    return stats
 
 
 def get_model_summary_stats(model) -> Dict:
@@ -91,9 +218,10 @@ def triplet_loss(y_true, y_pred, alpha=0.2):
     return loss
 
 
-def compute_embedding_quality_metrics(model, test_images: List[str]) -> Dict:
+def compute_embedding_quality_metrics_from_images(model, images_by_name: Dict[str, List[np.ndarray]]) -> Dict:
     """
     Compute quality metrics for embeddings generated by the model.
+    Uses images loaded from MongoDB.
     
     Metrics include:
     - Mean embedding norm
@@ -103,18 +231,27 @@ def compute_embedding_quality_metrics(model, test_images: List[str]) -> Dict:
     embeddings = []
     inference_times = []
     
-    for img_path in test_images:
-        if not os.path.exists(img_path):
-            continue
-            
-        start_time = time.time()
-        try:
-            embedding = img_to_encoding(img_path, model)
-            inference_times.append(time.time() - start_time)
-            embeddings.append(embedding.flatten())
-        except Exception as e:
-            print(f"Error processing {img_path}: {e}")
-            continue
+    for name, images in images_by_name.items():
+        for img_bgr in images[:5]:  # Limit to 5 images per person
+            start_time = time.time()
+            try:
+                # Convert BGR to RGB and normalize
+                img_rgb = img_bgr[..., ::-1].astype(np.float32) / 255.0
+                
+                # Ensure correct size
+                if img_rgb.shape[:2] != (96, 96):
+                    img_rgb = cv2.resize(img_rgb, (96, 96), interpolation=cv2.INTER_AREA)
+                
+                # Get embedding
+                x = np.array([img_rgb])
+                emb = model.predict_on_batch(x)[0]
+                emb = emb / max(np.linalg.norm(emb), 1e-12)
+                
+                inference_times.append(time.time() - start_time)
+                embeddings.append(emb)
+            except Exception as e:
+                print(f"Error processing image for {name}: {e}")
+                continue
     
     if not embeddings:
         return {}
@@ -134,19 +271,19 @@ def compute_embedding_quality_metrics(model, test_images: List[str]) -> Dict:
     return metrics
 
 
-def compute_verification_metrics(
+def compute_verification_metrics_from_mongodb(
     model, 
     database: Dict[str, np.ndarray], 
-    test_pairs: List[Tuple[str, str, bool]],
+    images_by_name: Dict[str, List[np.ndarray]],
     threshold: float = 0.5
 ) -> Dict:
     """
-    Compute verification metrics (accuracy, precision, recall, F1).
+    Compute verification metrics (accuracy, precision, recall, F1) using MongoDB data.
     
     Args:
         model: FaceNet model
-        database: Dictionary of name -> embedding
-        test_pairs: List of (image_path, identity, is_same_person)
+        database: Dictionary of name -> embedding (reference embeddings)
+        images_by_name: Dictionary of name -> list of face images
         threshold: Distance threshold for verification
     
     Returns:
@@ -158,28 +295,54 @@ def compute_verification_metrics(
     false_negatives = 0
     distances = []
     
-    for img_path, identity, is_same in test_pairs:
-        if not os.path.exists(img_path) or identity not in database:
+    db_names = list(database.keys())
+    if len(db_names) < 2:
+        return {}
+    
+    # Test each image against its own identity (positive) and a different identity (negative)
+    for name, images in images_by_name.items():
+        if name not in database:
             continue
             
-        try:
-            encoding = img_to_encoding(img_path, model)
-            dist = float(np.linalg.norm(encoding - database[identity]))
-            distances.append(dist)
-            
-            predicted_same = dist < threshold
-            
-            if is_same and predicted_same:
-                true_positives += 1
-            elif is_same and not predicted_same:
-                false_negatives += 1
-            elif not is_same and predicted_same:
-                false_positives += 1
-            else:
-                true_negatives += 1
-        except Exception as e:
-            print(f"Error in verification: {e}")
-            continue
+        for img_bgr in images[:3]:  # Test up to 3 images per person
+            try:
+                # Convert and get embedding
+                img_rgb = img_bgr[..., ::-1].astype(np.float32) / 255.0
+                if img_rgb.shape[:2] != (96, 96):
+                    img_rgb = cv2.resize(img_rgb, (96, 96), interpolation=cv2.INTER_AREA)
+                
+                x = np.array([img_rgb])
+                emb = model.predict_on_batch(x)[0]
+                emb = emb / max(np.linalg.norm(emb), 1e-12)
+                query_emb = np.expand_dims(emb, axis=0)
+                
+                # Test positive pair (same identity)
+                ref_emb = database[name]
+                dist = float(np.linalg.norm(query_emb - ref_emb))
+                distances.append(dist)
+                predicted_same = dist < threshold
+                
+                if predicted_same:
+                    true_positives += 1
+                else:
+                    false_negatives += 1
+                
+                # Test negative pair (different identity)
+                other_names = [n for n in db_names if n != name]
+                if other_names:
+                    other_name = other_names[0]
+                    other_ref_emb = database[other_name]
+                    dist_other = float(np.linalg.norm(query_emb - other_ref_emb))
+                    predicted_same_other = dist_other < threshold
+                    
+                    if not predicted_same_other:
+                        true_negatives += 1
+                    else:
+                        false_positives += 1
+                        
+            except Exception as e:
+                print(f"Error in verification for {name}: {e}")
+                continue
     
     total = true_positives + true_negatives + false_positives + false_negatives
     
@@ -243,7 +406,7 @@ def log_facenet_experiment(run_name: str = None):
     This logs:
     - Model parameters (architecture, input shape, embedding size)
     - Training configuration
-    - Performance metrics
+    - Performance metrics from MongoDB data
     - Model artifacts
     """
     print("=" * 60)
@@ -261,7 +424,7 @@ def log_facenet_experiment(run_name: str = None):
         print(f"Starting MLflow run: {run_name}")
         
         # ============ Load Model ============
-        print("\n[1/5] Loading FaceNet model...")
+        print("\n[1/6] Loading FaceNet model...")
         K.set_image_data_format("channels_last")
         model = faceRecoModel(input_shape=(96, 96, 3))
         load_weights_from_FaceNet(model)
@@ -269,7 +432,7 @@ def log_facenet_experiment(run_name: str = None):
         print(f"Total Parameters: {model.count_params():,}")
         
         # ============ Log Parameters ============
-        print("\n[2/5] Logging model parameters...")
+        print("\n[2/6] Logging model parameters...")
         
         # Model architecture parameters
         mlflow.log_param("model_name", "FaceNet")
@@ -281,6 +444,8 @@ def log_facenet_experiment(run_name: str = None):
         mlflow.log_param("triplet_margin_alpha", 0.2)
         mlflow.log_param("verification_threshold", 0.5)
         mlflow.log_param("channels_format", "channels_last")
+        mlflow.log_param("data_source", "MongoDB")
+        mlflow.log_param("mongodb_database", MONGODB_DATABASE_NAME)
         
         # Get model summary stats
         model_stats = get_model_summary_stats(model)
@@ -293,50 +458,64 @@ def log_facenet_experiment(run_name: str = None):
         for layer_type, count in model_stats["layer_types"].items():
             mlflow.log_param(f"layer_count_{layer_type}", count)
         
-        # ============ Build Database ============
-        print("\n[3/5] Building face database from images...")
+        # ============ Log MongoDB Stats ============
+        print("\n[3/6] Fetching MongoDB statistics...")
+        mongo_stats = get_mongodb_stats()
+        for key, value in mongo_stats.items():
+            mlflow.log_metric(f"mongodb_{key}", value)
+            print(f"  {key}: {value}")
         
+        # ============ Load Data from MongoDB ============
+        print("\n[4/6] Loading face images from MongoDB...")
+        images_by_name = load_faces_from_mongodb()
+        
+        if not images_by_name:
+            print("  No face images found in MongoDB!")
+            mlflow.log_param("registered_identities", 0)
+            mlflow.log_param("total_images", 0)
+        else:
+            total_images = sum(len(imgs) for imgs in images_by_name.values())
+            mlflow.log_param("registered_identities", len(images_by_name))
+            mlflow.log_param("total_images", total_images)
+            print(f"  Loaded {total_images} images for {len(images_by_name)} identities")
+        
+        # ============ Build Embedding Database ============
+        print("\n[5/6] Building embedding database...")
         database = {}
-        images_dir = Path("images")
-        test_images = []
         
-        # Scan for registered users (directories with images)
-        if images_dir.exists():
-            for user_dir in images_dir.iterdir():
-                if user_dir.is_dir():
-                    user_name = user_dir.name
-                    user_images = list(user_dir.glob("*.jpg")) + list(user_dir.glob("*.png"))
+        for name, images in images_by_name.items():
+            per_identity_embs = []
+            for img_bgr in images:
+                try:
+                    # Convert BGR to RGB and normalize
+                    img_rgb = img_bgr[..., ::-1].astype(np.float32) / 255.0
                     
-                    if user_images:
-                        # Use first image for database
-                        first_img = str(user_images[0])
-                        try:
-                            database[user_name] = img_to_encoding(first_img, model)
-                            print(f"  Registered: {user_name} ({len(user_images)} images)")
-                            test_images.extend([str(img) for img in user_images])
-                        except Exception as e:
-                            print(f"  Error registering {user_name}: {e}")
+                    # Ensure correct size
+                    if img_rgb.shape[:2] != (96, 96):
+                        img_rgb = cv2.resize(img_rgb, (96, 96), interpolation=cv2.INTER_AREA)
+                    
+                    # Get embedding
+                    x = np.array([img_rgb])
+                    emb = model.predict_on_batch(x)[0]
+                    emb = emb / max(np.linalg.norm(emb), 1e-12)
+                    per_identity_embs.append(np.expand_dims(emb, axis=0))
+                except Exception as e:
+                    print(f"  Error processing image for {name}: {e}")
+                    continue
             
-            # Also check for loose images in images/ folder
-            for img_file in images_dir.glob("*.jpg"):
-                name = img_file.stem
-                if name not in database:
-                    try:
-                        database[name] = img_to_encoding(str(img_file), model)
-                        test_images.append(str(img_file))
-                        print(f"  Registered: {name}")
-                    except Exception as e:
-                        print(f"  Error: {e}")
-        
-        mlflow.log_param("registered_identities", len(database))
-        mlflow.log_param("total_test_images", len(test_images))
+            if per_identity_embs:
+                # Average embeddings for this identity
+                mean_emb = np.mean(np.concatenate(per_identity_embs, axis=0), axis=0)
+                mean_emb = mean_emb / max(np.linalg.norm(mean_emb), 1e-12)
+                database[name] = np.expand_dims(mean_emb, axis=0)
+                print(f"  Built embedding for: {name} ({len(per_identity_embs)} images)")
         
         # ============ Compute Metrics ============
-        print("\n[4/5] Computing performance metrics...")
+        print("\n[6/6] Computing performance metrics...")
         
         # Embedding quality metrics
-        if test_images:
-            embedding_metrics = compute_embedding_quality_metrics(model, test_images[:20])
+        if images_by_name:
+            embedding_metrics = compute_embedding_quality_metrics_from_images(model, images_by_name)
             for key, value in embedding_metrics.items():
                 mlflow.log_metric(key, value)
                 print(f"  {key}: {value:.4f}")
@@ -349,22 +528,10 @@ def log_facenet_experiment(run_name: str = None):
                     mlflow.log_metric(key, value)
                     print(f"  {key}: {value:.4f}")
         
-        # Create synthetic test pairs for verification
-        test_pairs = []
-        db_names = list(database.keys())
-        for name in db_names[:5]:  # Test first 5 identities
-            for img_path in test_images[:10]:
-                if name in img_path:
-                    test_pairs.append((img_path, name, True))
-                elif db_names:
-                    # Use a different identity for negative pair
-                    other_name = [n for n in db_names if n != name and n not in img_path]
-                    if other_name:
-                        test_pairs.append((img_path, other_name[0], False))
-        
-        if test_pairs and database:
-            verification_metrics = compute_verification_metrics(
-                model, database, test_pairs, threshold=0.5
+        # Verification metrics
+        if len(database) >= 2 and images_by_name:
+            verification_metrics = compute_verification_metrics_from_mongodb(
+                model, database, images_by_name, threshold=0.5
             )
             for key, value in verification_metrics.items():
                 if isinstance(value, (int, float)):
@@ -372,13 +539,14 @@ def log_facenet_experiment(run_name: str = None):
                     print(f"  {key}: {value:.4f}" if isinstance(value, float) else f"  {key}: {value}")
         
         # ============ Log Artifacts ============
-        print("\n[5/5] Logging model artifacts...")
+        print("\n[7/7] Logging model artifacts...")
         
         # Save model summary to file
         summary_file = "model_summary.txt"
         with open(summary_file, "w") as f:
             f.write("FaceNet Model Summary\n")
             f.write("=" * 50 + "\n\n")
+            f.write(f"Data Source: MongoDB ({MONGODB_DATABASE_NAME})\n\n")
             model.summary(print_fn=lambda x: f.write(x + "\n"))
             f.write(f"\n\nDatabase Identities: {list(database.keys())}\n")
         mlflow.log_artifact(summary_file)
@@ -387,9 +555,12 @@ def log_facenet_experiment(run_name: str = None):
         # Save database info
         db_info_file = "database_info.json"
         db_info = {
+            "data_source": "MongoDB",
+            "mongodb_database": MONGODB_DATABASE_NAME,
             "identities": list(database.keys()),
             "count": len(database),
             "embedding_size": EMBEDDING_SIZE,
+            "images_per_identity": {name: len(imgs) for name, imgs in images_by_name.items()},
             "timestamp": datetime.now().isoformat()
         }
         with open(db_info_file, "w") as f:
@@ -397,8 +568,12 @@ def log_facenet_experiment(run_name: str = None):
         mlflow.log_artifact(db_info_file)
         os.remove(db_info_file)
         
-        # Log the model (optional - can be large)
-        # mlflow.keras.log_model(model, "facenet_model")
+        # Save MongoDB stats
+        mongo_stats_file = "mongodb_stats.json"
+        with open(mongo_stats_file, "w") as f:
+            json.dump(mongo_stats, f, indent=2)
+        mlflow.log_artifact(mongo_stats_file)
+        os.remove(mongo_stats_file)
         
         print("\n" + "=" * 60)
         print("FaceNet experiment logged successfully!")
@@ -463,50 +638,49 @@ def log_mtcnn_experiment(run_name: str = None):
         mlflow.log_param("onet_threshold", confidence_thresholds[2])
         mlflow.log_param("output_type", "bounding_box + keypoints")
         mlflow.log_param("keypoints", "left_eye, right_eye, nose, mouth_left, mouth_right")
+        mlflow.log_param("data_source", "MongoDB")
         
-        # ============ Run Detection Tests ============
-        print("\n[3/4] Running face detection tests...")
+        # ============ Run Detection Tests on MongoDB Images ============
+        print("\n[3/4] Running face detection tests on MongoDB images...")
         
-        images_dir = Path("images")
+        # Load images from MongoDB
+        images_by_name = load_faces_from_mongodb()
         detection_results = []
         inference_times = []
         total_faces_detected = 0
         
-        if images_dir.exists():
-            # Get all test images
-            test_images = list(images_dir.glob("**/*.jpg")) + list(images_dir.glob("**/*.png"))
-            
-            for img_path in test_images[:30]:  # Test up to 30 images
-                try:
-                    img = cv2.imread(str(img_path))
-                    if img is None:
+        if images_by_name:
+            for name, images in images_by_name.items():
+                for idx, img_bgr in enumerate(images[:5]):  # Test up to 5 images per person
+                    try:
+                        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+                        
+                        start_time = time.time()
+                        faces = detector.detect_faces(img_rgb)
+                        inference_time = time.time() - start_time
+                        
+                        inference_times.append(inference_time)
+                        total_faces_detected += len(faces)
+                        
+                        # Get confidence scores
+                        confidences = [f.get("confidence", 0) for f in faces]
+                        
+                        detection_results.append({
+                            "identity": name,
+                            "image_index": idx,
+                            "faces_detected": len(faces),
+                            "inference_time_ms": inference_time * 1000,
+                            "confidences": confidences,
+                            "image_size": img_bgr.shape[:2]
+                        })
+                        
+                        print(f"  {name}[{idx}]: {len(faces)} faces, {inference_time*1000:.1f}ms")
+                        
+                    except Exception as e:
+                        print(f"  Error processing {name}[{idx}]: {e}")
                         continue
-                    
-                    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                    
-                    start_time = time.time()
-                    faces = detector.detect_faces(img_rgb)
-                    inference_time = time.time() - start_time
-                    
-                    inference_times.append(inference_time)
-                    total_faces_detected += len(faces)
-                    
-                    # Get confidence scores
-                    confidences = [f.get("confidence", 0) for f in faces]
-                    
-                    detection_results.append({
-                        "image": str(img_path),
-                        "faces_detected": len(faces),
-                        "inference_time_ms": inference_time * 1000,
-                        "confidences": confidences,
-                        "image_size": img.shape[:2]
-                    })
-                    
-                    print(f"  {img_path.name}: {len(faces)} faces, {inference_time*1000:.1f}ms")
-                    
-                except Exception as e:
-                    print(f"  Error processing {img_path}: {e}")
-                    continue
+        else:
+            print("  No images found in MongoDB for MTCNN testing")
         
         # ============ Log Metrics ============
         print("\n[4/4] Logging detection metrics...")
@@ -600,59 +774,62 @@ def log_combined_pipeline_experiment(run_name: str = None):
         mlflow.log_param("embedding_dim", 128)
         mlflow.log_param("verification_threshold", 0.5)
         mlflow.log_param("min_detection_confidence", 0.9)
+        mlflow.log_param("data_source", "MongoDB")
+        mlflow.log_param("mongodb_database", MONGODB_DATABASE_NAME)
         
-        # Test pipeline on images
-        print("\n[3/3] Testing full pipeline...")
-        images_dir = Path("images")
+        # Test pipeline on MongoDB images
+        print("\n[3/3] Testing full pipeline on MongoDB images...")
+        
+        # Load images from MongoDB
+        images_by_name = load_faces_from_mongodb()
         pipeline_times = []
         successful_recognitions = 0
         total_tests = 0
         
-        if images_dir.exists():
-            test_images = list(images_dir.glob("**/*.jpg"))[:20]
-            
-            for img_path in test_images:
-                try:
-                    start_time = time.time()
-                    
-                    # Step 1: Load and detect
-                    img = cv2.imread(str(img_path))
-                    if img is None:
+        if images_by_name:
+            for name, images in images_by_name.items():
+                for idx, img_bgr in enumerate(images[:3]):  # Test up to 3 images per person
+                    try:
+                        start_time = time.time()
+                        
+                        # Step 1: Convert to RGB and detect
+                        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+                        faces = mtcnn_detector.detect_faces(img_rgb)
+                        
+                        if not faces:
+                            # Image is already a face crop, process directly
+                            face_resized = cv2.resize(img_rgb, TARGET_SIZE)
+                            face_normalized = face_resized.astype(np.float32) / 255.0
+                        else:
+                            # Step 2: Get best face
+                            best_face = max(faces, key=lambda x: x.get("confidence", 0))
+                            x, y, w, h = best_face["box"]
+                            
+                            # Step 3: Crop and resize
+                            face_crop = img_rgb[max(0,y):y+h, max(0,x):x+w]
+                            if face_crop.size == 0:
+                                face_crop = img_rgb
+                            
+                            face_resized = cv2.resize(face_crop, TARGET_SIZE)
+                            face_normalized = face_resized.astype(np.float32) / 255.0
+                        
+                        # Step 4: Get embedding
+                        embedding = facenet_model.predict(np.expand_dims(face_normalized, axis=0))
+                        
+                        pipeline_time = time.time() - start_time
+                        pipeline_times.append(pipeline_time)
+                        total_tests += 1
+                        
+                        if embedding is not None and embedding.shape[-1] == 128:
+                            successful_recognitions += 1
+                        
+                        print(f"  {name}[{idx}]: Pipeline time {pipeline_time*1000:.1f}ms")
+                        
+                    except Exception as e:
+                        print(f"  Error processing {name}[{idx}]: {e}")
                         continue
-                    
-                    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                    faces = mtcnn_detector.detect_faces(img_rgb)
-                    
-                    if not faces:
-                        continue
-                    
-                    # Step 2: Get best face
-                    best_face = max(faces, key=lambda x: x.get("confidence", 0))
-                    x, y, w, h = best_face["box"]
-                    
-                    # Step 3: Crop and resize
-                    face_crop = img_rgb[max(0,y):y+h, max(0,x):x+w]
-                    if face_crop.size == 0:
-                        continue
-                    
-                    face_resized = cv2.resize(face_crop, TARGET_SIZE)
-                    face_normalized = face_resized / 255.0
-                    
-                    # Step 4: Get embedding
-                    embedding = facenet_model.predict(np.expand_dims(face_normalized, axis=0))
-                    
-                    pipeline_time = time.time() - start_time
-                    pipeline_times.append(pipeline_time)
-                    total_tests += 1
-                    
-                    if embedding is not None and embedding.shape[-1] == 128:
-                        successful_recognitions += 1
-                    
-                    print(f"  {img_path.name}: Pipeline time {pipeline_time*1000:.1f}ms")
-                    
-                except Exception as e:
-                    print(f"  Error: {e}")
-                    continue
+        else:
+            print("  No images found in MongoDB for pipeline testing")
         
         # Log pipeline metrics
         if pipeline_times:

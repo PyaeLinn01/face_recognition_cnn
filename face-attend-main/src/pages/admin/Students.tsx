@@ -60,7 +60,7 @@ export default function Students() {
           <Card>
             <CardContent className="pt-6">
               <div className="text-center">
-                <p className="text-3xl font-bold text-green-500">
+                <p className="text-3xl font-bold text-slate-500">
                   {students.filter(s => s.face_registered).length}
                 </p>
                 <p className="text-sm text-muted-foreground">Face Registered</p>
@@ -70,7 +70,7 @@ export default function Students() {
           <Card>
             <CardContent className="pt-6">
               <div className="text-center">
-                <p className="text-3xl font-bold text-orange-500">
+                <p className="text-3xl font-bold text-slate-400">
                   {students.filter(s => !s.face_registered).length}
                 </p>
                 <p className="text-sm text-muted-foreground">No Face Data</p>

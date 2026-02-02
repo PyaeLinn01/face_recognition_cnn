@@ -14,6 +14,8 @@ import numpy as np
 import cv2
 from datetime import datetime
 from typing import Dict, Tuple, Optional, List
+from functools import wraps
+import hmac
 
 # Import MongoDB utilities
 try:
@@ -54,10 +56,34 @@ MONGODB_DATABASE_NAME = os.getenv(
 
 TARGET_SIZE = (96, 96)
 
+# API Key protection
+API_KEY_ENV = "FACE_API_KEY"
+API_KEY_HEADER = "x-api-key"
+
 # Cache models
 _model_cache = {}
 _detector_cache = {}
 _database_cache = {}
+
+
+def require_api_key(f):
+    """Decorator to enforce API key validation on protected endpoints."""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        expected_key = os.getenv(API_KEY_ENV)
+        if not expected_key:
+            # No key configured - allow in dev mode
+            return f(*args, **kwargs)
+        
+        provided_key = request.headers.get(API_KEY_HEADER)
+        if not provided_key:
+            return jsonify({"error": "Missing API key. Include x-api-key header."}), 401
+        
+        if not hmac.compare_digest(provided_key.strip(), expected_key.strip()):
+            return jsonify({"error": "Invalid API key"}), 401
+        
+        return f(*args, **kwargs)
+    return decorated_function
 
 
 def get_mongodb_client():
@@ -388,6 +414,7 @@ def health_check():
 
 
 @app.route('/api/v1/detect-face', methods=['POST'])
+@require_api_key
 def detect_face():
     """
     Detect faces in an image, return bounding boxes, and identify the person.
@@ -419,7 +446,7 @@ def detect_face():
         image_base64 = data.get("image_base64")
         min_confidence = data.get("min_confidence", 0.90)
         identify = data.get("identify", True)  # Default to identify
-        threshold = data.get("threshold", 0.5)  # Distance threshold for matching
+        threshold = data.get("threshold", 0.6)  # Distance threshold for matching
         
         if not image_base64:
             return jsonify({"error": "Missing image"}), 400
@@ -517,6 +544,7 @@ def detect_face():
 
 
 @app.route('/api/v1/register-face', methods=['POST'])
+@require_api_key
 def register_face():
     """
     Register a new face for a person with face detection and preprocessing.
@@ -588,6 +616,7 @@ def register_face():
 
 
 @app.route('/api/v1/verify-face', methods=['POST'])
+@require_api_key
 def verify_face():
     """
     Verify a face against registered identities using FaceNet + MTCNN.
@@ -595,7 +624,7 @@ def verify_face():
     try:
         data = request.json
         image_base64 = data.get("image_base64")
-        threshold = data.get("threshold", 0.5)
+        threshold = data.get("threshold", 0.6)
         use_detection = data.get("use_detection", True)
         
         if not image_base64:

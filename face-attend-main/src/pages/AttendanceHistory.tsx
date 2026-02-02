@@ -204,7 +204,7 @@ export default function AttendanceHistory() {
                       {/* Left accent line */}
                       <div className={`absolute left-0 top-0 bottom-0 w-1 rounded-l-xl ${
                         record.distance < 0.3 ? 'bg-gradient-to-b from-emerald-500 to-green-500' : 
-                        record.distance < 0.5 ? 'bg-gradient-to-b from-blue-500 to-cyan-500' : 
+                        record.distance < 0.6 ? 'bg-gradient-to-b from-blue-500 to-cyan-500' : 
                         'bg-gradient-to-b from-amber-500 to-orange-500'
                       }`} />
                       
@@ -233,10 +233,10 @@ export default function AttendanceHistory() {
                         <div className="flex items-center gap-2 justify-end">
                           <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${
                             record.distance < 0.3 ? 'bg-emerald-500/10 text-emerald-500 border border-emerald-500/20' : 
-                            record.distance < 0.5 ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' : 
+                            record.distance < 0.6 ? 'bg-blue-500/10 text-blue-400 border border-blue-500/20' : 
                             'bg-amber-500/10 text-amber-400 border border-amber-500/20'
                           }`}>
-                            {record.distance < 0.3 ? 'High Match' : record.distance < 0.5 ? 'Good Match' : 'Low Match'}
+                            {record.distance < 0.3 ? 'High Match' : record.distance < 0.6 ? 'Good Match' : 'Low Match'}
                           </span>
                         </div>
                         <p className="text-sm text-muted-foreground mt-1">

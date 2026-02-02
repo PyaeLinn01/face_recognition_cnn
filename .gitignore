@@ -88,3 +88,5 @@ yarn-error.log*
 
 # Database files
 attendance.csv
+
+api_keys.json

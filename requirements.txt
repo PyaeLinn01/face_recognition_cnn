@@ -17,3 +17,4 @@ Flask-CORS==4.0.0
 python-dotenv==1.0.0
 ray>=2.8.0
 ray[serve]>=2.8.0
+fastapi[standard]

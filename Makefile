@@ -14,8 +14,10 @@ help:
 	@echo ""
 	@echo "🐳 Docker (All-in-One):"
 	@echo "  make build          - Build the all-in-one Docker image"
+	@echo "  make rebuild        - Force rebuild without cache (fixes liveness issues)"
 	@echo "  make run            - Run the container"
 	@echo "  make start          - Build and run (one command)"
+	@echo "  make start-fresh    - Clean rebuild and run (use if liveness not working)"
 	@echo "  make stop           - Stop the container"
 	@echo "  make restart        - Restart the container"
 	@echo "  make logs           - View container logs"
@@ -45,6 +47,12 @@ build:
 	docker build -f Dockerfile.allinone -t $(IMAGE_NAME) .
 	@echo "✅ Build complete!"
 
+# Force rebuild without cache (use this when liveness models are not loading)
+rebuild: clean
+	@echo "🔨 Force rebuilding Docker image (no cache)..."
+	docker build --no-cache -f Dockerfile.allinone -t $(IMAGE_NAME) .
+	@echo "✅ Rebuild complete!"
+
 # Run the container
 run:
 	@echo "🚀 Starting container..."
@@ -65,6 +73,10 @@ run:
 # Build and run in one command
 start: build run
 	@echo "✅ Ready to use!"
+
+# Clean rebuild and run (use this if liveness detection is not working)
+start-fresh: rebuild run
+	@echo "✅ Fresh start complete!"
 
 # Stop the container
 stop:

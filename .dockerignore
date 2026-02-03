@@ -1,0 +1,49 @@
+# Ignore git
+.git
+.gitignore
+
+# Ignore Python cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Ignore virtual environments
+venv/
+env/
+.venv/
+
+# Ignore IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Ignore test files
+*.test.*
+test_*.py
+
+# Ignore node_modules (we'll install fresh in Docker)
+face-attend-main/node_modules/
+
+# Ignore logs and temp files
+*.log
+*.tmp
+.DS_Store
+
+# Ignore mlflow runs
+mlruns/
+
+# Ignore data files (will use MongoDB)
+data/
+datasets/
+images/
+
+# DO NOT ignore these (important for liveness):
+# Face_liveness_detection_static/
+# Face_liveness_detection_static/resources/
+# Face_liveness_detection_static/src/
+# *.pth
+# *.caffemodel

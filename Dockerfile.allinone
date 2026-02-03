@@ -58,6 +58,15 @@ COPY weights/ ./weights/
 # Copy liveness detection models and source
 COPY Face_liveness_detection_static/ ./Face_liveness_detection_static/
 
+# Verify liveness detection files are present
+RUN echo "Checking liveness detection files..." && \
+    ls -la /app/Face_liveness_detection_static/resources/anti_spoof_models/ && \
+    ls -la /app/Face_liveness_detection_static/resources/detection_model/ && \
+    ls -la /app/Face_liveness_detection_static/src/model_lib/
+
+# Set PYTHONPATH to include liveness detection src
+ENV PYTHONPATH="/app/Face_liveness_detection_static:${PYTHONPATH}"
+
 # Copy frontend and install dependencies
 COPY face-attend-main/ ./frontend/
 WORKDIR /app/frontend

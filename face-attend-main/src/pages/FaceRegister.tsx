@@ -5,7 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Camera, CheckCircle, RefreshCw, Loader2, X, User, Sparkles, Lightbulb, Shield, Scan } from 'lucide-react';
+import { Camera, CheckCircle, RefreshCw, Loader2, X, User, Sparkles, Lightbulb, Shield, Scan, Eye, EyeOff, AlertTriangle } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { faceAPI } from '@/lib/face-api';
 
@@ -15,6 +15,13 @@ interface DetectedFace {
   box: [number, number, number, number]; // [x, y, width, height]
   confidence: number;
   keypoints?: Record<string, [number, number]>;
+}
+
+interface LivenessResult {
+  is_real: boolean;
+  score: number;
+  label: 'Real' | 'Fake' | 'No Face';
+  face_detected: boolean;
 }
 
 export default function FaceRegister() {
@@ -31,9 +38,12 @@ export default function FaceRegister() {
   const [detectedFaces, setDetectedFaces] = useState<DetectedFace[]>([]);
   const [isDetecting, setIsDetecting] = useState(false);
   const detectionIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // Liveness detection state
+  const [livenessResult, setLivenessResult] = useState<LivenessResult | null>(null);
 
-  // Draw face detection boxes on overlay canvas
-  const drawFaceBoxes = useCallback((faces: DetectedFace[], videoWidth: number, videoHeight: number) => {
+  // Draw face detection boxes on overlay canvas with liveness status
+  const drawFaceBoxes = useCallback((faces: DetectedFace[], videoWidth: number, videoHeight: number, liveness?: LivenessResult | null) => {
     const canvas = overlayCanvasRef.current;
     if (!canvas) return;
 
@@ -50,9 +60,36 @@ export default function FaceRegister() {
     faces.forEach((face) => {
       const [x, y, w, h] = face.box;
       const confidence = face.confidence;
+      
+      // Determine colors based on liveness
+      const isLive = liveness?.is_real === true;
+      const isFake = liveness?.is_real === false && liveness?.face_detected;
+      
+      let boxColor: string;
+      let labelBgColor: string;
+      
+      if (isFake) {
+        boxColor = '#ff0000';
+        labelBgColor = 'rgba(255, 0, 0, 0.9)';
+      } else if (isLive) {
+        boxColor = '#00ff00';
+        labelBgColor = 'rgba(0, 255, 0, 0.9)';
+      } else {
+        boxColor = '#ffcc00';
+        labelBgColor = 'rgba(255, 204, 0, 0.9)';
+      }
 
-      // Draw rounded rectangle border (green for registration)
-      ctx.strokeStyle = '#00ff00';
+      // Draw rounded rectangle border with glow
+      ctx.save();
+      if (isLive) {
+        ctx.shadowColor = '#00ff00';
+        ctx.shadowBlur = 15;
+      } else if (isFake) {
+        ctx.shadowColor = '#ff0000';
+        ctx.shadowBlur = 20;
+      }
+      
+      ctx.strokeStyle = boxColor;
       ctx.lineWidth = 3;
       ctx.beginPath();
       const radius = 12;
@@ -67,9 +104,18 @@ export default function FaceRegister() {
       ctx.quadraticCurveTo(x, y, x + radius, y);
       ctx.closePath();
       ctx.stroke();
+      ctx.restore();
 
-      // Draw label - just show "Ready to capture" with detection confidence
-      const label = `Ready to capture (${(confidence * 100).toFixed(0)}%)`;
+      // Draw label with liveness status
+      let label: string;
+      if (isFake) {
+        label = `⚠️ SPOOF - Cannot Register`;
+      } else if (isLive) {
+        label = `✓ LIVE - Ready (${(confidence * 100).toFixed(0)}%)`;
+      } else {
+        label = `Checking... (${(confidence * 100).toFixed(0)}%)`;
+      }
+      
       ctx.font = 'bold 14px Arial';
       const textWidth = ctx.measureText(label).width;
       const labelHeight = 24;
@@ -77,18 +123,18 @@ export default function FaceRegister() {
       const labelY = y - labelHeight - 4;
 
       // Background for label
-      ctx.fillStyle = 'rgba(0, 255, 0, 0.9)';
+      ctx.fillStyle = labelBgColor;
       ctx.beginPath();
       ctx.roundRect(labelX, Math.max(0, labelY), textWidth + 16, labelHeight, 6);
       ctx.fill();
 
       // Label text
-      ctx.fillStyle = '#000000';
+      ctx.fillStyle = isFake ? '#ffffff' : '#000000';
       ctx.fillText(label, labelX + 8, Math.max(17, labelY + 17));
 
       // Draw keypoints if available
       if (face.keypoints) {
-        ctx.fillStyle = '#00ffff';
+        ctx.fillStyle = isLive ? '#00ffff' : (isFake ? '#ff6666' : '#ffff00');
         Object.values(face.keypoints).forEach(([px, py]) => {
           ctx.beginPath();
           ctx.arc(px, py, 3, 0, 2 * Math.PI);
@@ -98,7 +144,7 @@ export default function FaceRegister() {
     });
   }, []);
 
-  // Run face detection periodically
+  // Run face detection periodically with liveness check
   const runFaceDetection = useCallback(async () => {
     if (!videoRef.current || !canvasRef.current) return;
 
@@ -121,14 +167,22 @@ export default function FaceRegister() {
       const imageDataUrl = canvas.toDataURL('image/jpeg', 0.7);
       const imageBase64 = imageDataUrl.split(',')[1];
 
-      // Call detection API (identify=false for registration - just detect, don't identify)
-      const result = await faceAPI.detectFace(imageBase64, 0.90, false);
+      // Call detection API and liveness API in parallel
+      const [detectionResult, livenessResultData] = await Promise.all([
+        faceAPI.detectFace(imageBase64, 0.90, false), // identify=false for registration
+        faceAPI.checkLiveness(imageBase64).catch(() => null)
+      ]);
 
-      if (result.faces && result.faces.length > 0) {
-        setDetectedFaces(result.faces);
-        drawFaceBoxes(result.faces, video.videoWidth, video.videoHeight);
+      if (livenessResultData) {
+        setLivenessResult(livenessResultData);
+      }
+
+      if (detectionResult.faces && detectionResult.faces.length > 0) {
+        setDetectedFaces(detectionResult.faces);
+        drawFaceBoxes(detectionResult.faces, video.videoWidth, video.videoHeight, livenessResultData);
       } else {
         setDetectedFaces([]);
+        setLivenessResult(null);
         // Clear overlay
         const overlayCanvas = overlayCanvasRef.current;
         if (overlayCanvas) {
@@ -193,9 +247,10 @@ export default function FaceRegister() {
       setStream(null);
     }
     setDetectedFaces([]);
+    setLivenessResult(null);
   }, [stream]);
 
-  const capturePhoto = useCallback(() => {
+  const capturePhoto = useCallback(async () => {
     if (videoRef.current && canvasRef.current) {
       const video = videoRef.current;
       const canvas = canvasRef.current;
@@ -205,16 +260,54 @@ export default function FaceRegister() {
       if (ctx) {
         ctx.drawImage(video, 0, 0);
         const imageData = canvas.toDataURL('image/jpeg', 0.8);
-        setCapturedImages(prev => [...prev, imageData]);
+        const imageBase64 = imageData.split(',')[1];
         
-        // Auto-stop camera after capturing all images
-        if (capturedImages.length + 1 >= NUM_IMAGES) {
-          stopCamera();
-          setCurrentStep(3);
+        // Check liveness before accepting the capture
+        try {
+          const livenessCheck = await faceAPI.checkLiveness(imageBase64);
+          
+          if (!livenessCheck.face_detected) {
+            toast({
+              variant: 'destructive',
+              title: 'No Face Detected',
+              description: 'Please ensure your face is clearly visible.',
+            });
+            return;
+          }
+          
+          if (!livenessCheck.is_real) {
+            toast({
+              variant: 'destructive',
+              title: '⚠️ Spoof Detected!',
+              description: `Cannot register a fake face. Score: ${livenessCheck.score.toFixed(2)}. Use your real face, not a photo or screen.`,
+            });
+            return;
+          }
+          
+          // Liveness passed - accept the capture
+          setCapturedImages(prev => [...prev, imageData]);
+          
+          toast({
+            title: `✓ Photo ${capturedImages.length + 1} captured`,
+            description: 'Live face verified successfully.',
+          });
+          
+          // Auto-stop camera after capturing all images
+          if (capturedImages.length + 1 >= NUM_IMAGES) {
+            stopCamera();
+            setCurrentStep(3);
+          }
+        } catch (error) {
+          console.error('Liveness check error:', error);
+          toast({
+            variant: 'destructive',
+            title: 'Verification Failed',
+            description: 'Could not verify liveness. Please try again.',
+          });
         }
       }
     }
-  }, [stopCamera, capturedImages.length]);
+  }, [stopCamera, capturedImages.length, toast]);
 
   const removeImage = (index: number) => {
     setCapturedImages(prev => prev.filter((_, i) => i !== index));
@@ -574,13 +667,46 @@ export default function FaceRegister() {
 
                     <canvas ref={canvasRef} className="hidden" />
 
-                    {/* Detection status */}
+                    {/* Detection and Liveness status */}
                     {stream && (
                       <motion.div 
-                        className="flex items-center justify-center gap-3 mt-4"
+                        className="flex flex-col items-center gap-3 mt-4"
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                       >
+                        {/* Liveness Status */}
+                        <div className={`flex items-center gap-2 px-4 py-2 rounded-full border ${
+                          livenessResult?.is_real 
+                            ? 'bg-emerald-500/10 border-emerald-500/30' 
+                            : livenessResult?.face_detected && !livenessResult?.is_real
+                              ? 'bg-red-500/10 border-red-500/30 animate-pulse' 
+                              : 'bg-gray-500/10 border-gray-500/30'
+                        }`}>
+                          {livenessResult?.is_real ? (
+                            <Eye className="w-4 h-4 text-emerald-400" />
+                          ) : livenessResult?.face_detected ? (
+                            <EyeOff className="w-4 h-4 text-red-400" />
+                          ) : (
+                            <Shield className="w-4 h-4 text-gray-400" />
+                          )}
+                          <span className={`text-sm font-medium ${
+                            livenessResult?.is_real 
+                              ? 'text-emerald-400' 
+                              : livenessResult?.face_detected && !livenessResult?.is_real
+                                ? 'text-red-400' 
+                                : 'text-gray-400'
+                          }`}>
+                            {livenessResult?.is_real 
+                              ? `✓ LIVE FACE - Ready to capture` 
+                              : livenessResult?.face_detected && !livenessResult?.is_real
+                                ? `⚠️ SPOOF DETECTED - Cannot capture`
+                                : livenessResult && !livenessResult.face_detected
+                                  ? 'No face for liveness check'
+                                  : 'Waiting for face...'}
+                          </span>
+                        </div>
+
+                        {/* Face Detection Status */}
                         <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-muted/50 border border-border">
                           <div className={`w-2.5 h-2.5 rounded-full ${detectedFaces.length > 0 ? 'bg-emerald-500' : 'bg-amber-500'} ${isDetecting ? 'animate-pulse' : ''}`} />
                           <span className="text-sm font-medium">
@@ -632,10 +758,16 @@ export default function FaceRegister() {
                           onClick={capturePhoto}
                           className="flex-1 h-14 text-lg"
                           variant="hero"
-                          disabled={!stream || detectedFaces.length === 0}
+                          disabled={!stream || detectedFaces.length === 0 || !livenessResult?.is_real}
                         >
                           <Camera className="w-5 h-5 mr-2" />
-                          Capture ({capturedImages.length + 1}/{NUM_IMAGES})
+                          {livenessResult?.is_real 
+                            ? `Capture (${capturedImages.length + 1}/${NUM_IMAGES})`
+                            : livenessResult?.face_detected && !livenessResult?.is_real
+                              ? 'Spoof Detected'
+                              : detectedFaces.length === 0
+                                ? 'No Face Detected'
+                                : 'Verifying Liveness...'}
                         </Button>
                       )}
                       {capturedImages.length >= NUM_IMAGES && (

@@ -207,6 +207,27 @@ export const faceAPI = {
     }
   },
 
+  /**
+   * Check if a face is real (live) or fake (spoofed)
+   * Uses anti-spoofing liveness detection models
+   */
+  async checkLiveness(imageBase64: string): Promise<{
+    is_real: boolean;
+    score: number;
+    label: 'Real' | 'Fake' | 'No Face';
+    face_detected: boolean;
+    bbox: [number, number, number, number] | null;
+  }> {
+    try {
+      const response = await apiClient.post('/liveness-check', {
+        image_base64: imageBase64,
+      });
+      return response.data;
+    } catch (error) {
+      throw error;
+    }
+  },
+
   // ==================== ADMIN API ====================
 
   /**

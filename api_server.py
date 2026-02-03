@@ -41,6 +41,14 @@ try:
 except ImportError:
     TENSORFLOW_AVAILABLE = False
 
+# Import PyTorch for anti-spoofing liveness detection
+try:
+    import torch
+    import torch.nn.functional as F
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+
 app = Flask(__name__)
 CORS(app)
 
@@ -56,6 +64,16 @@ MONGODB_DATABASE_NAME = os.getenv(
 
 TARGET_SIZE = (96, 96)
 
+# Liveness detection paths
+LIVENESS_MODEL_DIR = os.path.join(
+    os.path.dirname(__file__),
+    "Face_liveness_detection_static/resources/anti_spoof_models"
+)
+LIVENESS_DETECTION_MODEL = os.path.join(
+    os.path.dirname(__file__),
+    "Face_liveness_detection_static/resources/detection_model"
+)
+
 # API Key protection
 API_KEY_ENV = "FACE_API_KEY"
 API_KEY_HEADER = "x-api-key"
@@ -64,6 +82,271 @@ API_KEY_HEADER = "x-api-key"
 _model_cache = {}
 _detector_cache = {}
 _database_cache = {}
+_liveness_cache = {}
+
+
+# ==================== LIVENESS DETECTION ====================
+
+def parse_liveness_model_name(model_name):
+    """Parse model name to get input dimensions and model type."""
+    info = model_name.split('_')[0:-1]
+    h_input, w_input = info[-1].split('x')
+    model_type = model_name.split('.pth')[0].split('_')[-1]
+    if info[0] == "org":
+        scale = None
+    else:
+        scale = float(info[0])
+    return int(h_input), int(w_input), model_type, scale
+
+
+def get_liveness_kernel(height, width):
+    """Get kernel size for liveness model."""
+    kernel_size = ((height + 15) // 16, (width + 15) // 16)
+    return kernel_size
+
+
+class LivenessDetector:
+    """Anti-spoofing liveness detection using MiniFAS models."""
+    
+    def __init__(self, model_dir, device_id=0):
+        self.model_dir = model_dir
+        self.device = torch.device(
+            f"cuda:{device_id}" if torch.cuda.is_available() else "cpu"
+        )
+        self.models = {}
+        self.face_detector = None
+        self._init_face_detector()
+    
+    def _init_face_detector(self):
+        """Initialize RetinaFace detector."""
+        caffemodel = os.path.join(LIVENESS_DETECTION_MODEL, "Widerface-RetinaFace.caffemodel")
+        deploy = os.path.join(LIVENESS_DETECTION_MODEL, "deploy.prototxt")
+        if os.path.exists(caffemodel) and os.path.exists(deploy):
+            self.face_detector = cv2.dnn.readNetFromCaffe(deploy, caffemodel)
+            print("Liveness face detector loaded")
+        else:
+            print(f"Warning: Liveness detector models not found at {LIVENESS_DETECTION_MODEL}")
+    
+    def get_bbox(self, img):
+        """Get face bounding box using RetinaFace."""
+        if self.face_detector is None:
+            return None
+        
+        import math
+        height, width = img.shape[0], img.shape[1]
+        aspect_ratio = width / height
+        
+        if img.shape[1] * img.shape[0] >= 192 * 192:
+            img_resized = cv2.resize(
+                img,
+                (int(192 * math.sqrt(aspect_ratio)), int(192 / math.sqrt(aspect_ratio))),
+                interpolation=cv2.INTER_LINEAR
+            )
+        else:
+            img_resized = img
+        
+        blob = cv2.dnn.blobFromImage(img_resized, 1, mean=(104, 117, 123))
+        self.face_detector.setInput(blob, 'data')
+        out = self.face_detector.forward('detection_out').squeeze()
+        
+        if len(out.shape) == 1:
+            return None
+        
+        max_conf_index = np.argmax(out[:, 2])
+        if out[max_conf_index, 2] < 0.6:
+            return None
+        
+        left = int(out[max_conf_index, 3] * width)
+        top = int(out[max_conf_index, 4] * height)
+        right = int(out[max_conf_index, 5] * width)
+        bottom = int(out[max_conf_index, 6] * height)
+        
+        return [left, top, right - left + 1, bottom - top + 1]
+    
+    def _get_new_box(self, src_w, src_h, bbox, scale):
+        """Get scaled bounding box for cropping."""
+        x, y, box_w, box_h = bbox
+        scale = min((src_h - 1) / box_h, min((src_w - 1) / box_w, scale))
+        
+        new_width = box_w * scale
+        new_height = box_h * scale
+        center_x, center_y = box_w / 2 + x, box_h / 2 + y
+        
+        left_top_x = center_x - new_width / 2
+        left_top_y = center_y - new_height / 2
+        right_bottom_x = center_x + new_width / 2
+        right_bottom_y = center_y + new_height / 2
+        
+        if left_top_x < 0:
+            right_bottom_x -= left_top_x
+            left_top_x = 0
+        if left_top_y < 0:
+            right_bottom_y -= left_top_y
+            left_top_y = 0
+        if right_bottom_x > src_w - 1:
+            left_top_x -= right_bottom_x - src_w + 1
+            right_bottom_x = src_w - 1
+        if right_bottom_y > src_h - 1:
+            left_top_y -= right_bottom_y - src_h + 1
+            right_bottom_y = src_h - 1
+        
+        return int(left_top_x), int(left_top_y), int(right_bottom_x), int(right_bottom_y)
+    
+    def crop_face(self, org_img, bbox, scale, out_w, out_h, crop=True):
+        """Crop face region for liveness model input."""
+        if not crop:
+            return cv2.resize(org_img, (out_w, out_h))
+        
+        src_h, src_w = org_img.shape[:2]
+        left_top_x, left_top_y, right_bottom_x, right_bottom_y = self._get_new_box(
+            src_w, src_h, bbox, scale
+        )
+        
+        img = org_img[left_top_y:right_bottom_y + 1, left_top_x:right_bottom_x + 1]
+        return cv2.resize(img, (out_w, out_h))
+    
+    def _load_model(self, model_path):
+        """Load anti-spoof model."""
+        if model_path in self.models:
+            return self.models[model_path]
+        
+        # Import model classes - add Face_liveness_detection_static to path for 'from src.xxx' imports
+        import sys
+        liveness_root = os.path.join(os.path.dirname(__file__), "Face_liveness_detection_static")
+        if liveness_root not in sys.path:
+            sys.path.insert(0, liveness_root)
+        
+        from src.model_lib.MiniFASNet import MiniFASNetV1, MiniFASNetV2, MiniFASNetV1SE, MiniFASNetV2SE
+        
+        MODEL_MAPPING = {
+            'MiniFASNetV1': MiniFASNetV1,
+            'MiniFASNetV2': MiniFASNetV2,
+            'MiniFASNetV1SE': MiniFASNetV1SE,
+            'MiniFASNetV2SE': MiniFASNetV2SE
+        }
+        
+        model_name = os.path.basename(model_path)
+        h_input, w_input, model_type, _ = parse_liveness_model_name(model_name)
+        kernel_size = get_liveness_kernel(h_input, w_input)
+        
+        model = MODEL_MAPPING[model_type](conv6_kernel=kernel_size).to(self.device)
+        
+        state_dict = torch.load(model_path, map_location=self.device)
+        keys = iter(state_dict)
+        first_layer_name = next(keys)
+        
+        if first_layer_name.find('module.') >= 0:
+            from collections import OrderedDict
+            new_state_dict = OrderedDict()
+            for key, value in state_dict.items():
+                new_state_dict[key[7:]] = value
+            model.load_state_dict(new_state_dict)
+        else:
+            model.load_state_dict(state_dict)
+        
+        model.eval()
+        self.models[model_path] = model
+        return model
+    
+    def predict(self, img, model_path):
+        """Run prediction on cropped face image."""
+        import sys
+        liveness_root = os.path.join(os.path.dirname(__file__), "Face_liveness_detection_static")
+        if liveness_root not in sys.path:
+            sys.path.insert(0, liveness_root)
+        
+        from src.data_io import transform as trans
+        
+        test_transform = trans.Compose([trans.ToTensor()])
+        img_tensor = test_transform(img)
+        img_tensor = img_tensor.unsqueeze(0).to(self.device)
+        
+        model = self._load_model(model_path)
+        
+        with torch.no_grad():
+            result = model.forward(img_tensor)
+            result = F.softmax(result, dim=1).cpu().numpy()
+        
+        return result
+    
+    def check_liveness(self, image):
+        """
+        Check if a face is real or fake.
+        
+        Args:
+            image: RGB numpy array of the face image
+            
+        Returns:
+            dict: {
+                'is_real': bool,
+                'score': float (0-1, higher = more likely real),
+                'label': str ('Real' or 'Fake'),
+                'face_detected': bool
+            }
+        """
+        # Get face bounding box
+        bbox = self.get_bbox(image)
+        
+        if bbox is None:
+            return {
+                'is_real': False,
+                'score': 0.0,
+                'label': 'No Face',
+                'face_detected': False,
+                'bbox': None
+            }
+        
+        prediction = np.zeros((1, 3))
+        
+        # Run prediction with all available models
+        for model_name in os.listdir(self.model_dir):
+            if not model_name.endswith('.pth'):
+                continue
+            
+            h_input, w_input, model_type, scale = parse_liveness_model_name(model_name)
+            
+            crop = scale is not None
+            if crop:
+                img = self.crop_face(image, bbox, scale, w_input, h_input, crop=True)
+            else:
+                img = self.crop_face(image, bbox, 1.0, w_input, h_input, crop=False)
+            
+            if img is None:
+                continue
+            
+            model_path = os.path.join(self.model_dir, model_name)
+            prediction += self.predict(img, model_path)
+        
+        # Get final prediction
+        label_idx = np.argmax(prediction)
+        score = float(prediction[0][label_idx] / 2)  # Normalize by number of models
+        
+        is_real = bool(label_idx == 1)  # Convert numpy bool to Python bool
+        
+        # Convert bbox to Python list (it may contain numpy values)
+        bbox_list = [int(x) for x in bbox] if bbox is not None else None
+        
+        return {
+            'is_real': is_real,
+            'score': score,
+            'label': 'Real' if is_real else 'Fake',
+            'face_detected': True,
+            'bbox': bbox_list
+        }
+
+
+def get_liveness_detector():
+    """Get or create liveness detector (cached)."""
+    if "liveness" not in _liveness_cache:
+        if not TORCH_AVAILABLE:
+            raise RuntimeError("PyTorch not available - install torch")
+        if not os.path.exists(LIVENESS_MODEL_DIR):
+            raise RuntimeError(f"Liveness models not found at {LIVENESS_MODEL_DIR}")
+        
+        _liveness_cache["liveness"] = LivenessDetector(LIVENESS_MODEL_DIR, device_id=0)
+        print("Liveness detector loaded successfully")
+    
+    return _liveness_cache["liveness"]
 
 
 def require_api_key(f):
@@ -402,15 +685,67 @@ def clear_database_cache():
 @app.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint."""
+    liveness_available = TORCH_AVAILABLE and os.path.exists(LIVENESS_MODEL_DIR)
     return jsonify({
         "status": "ok",
         "service": "Face Attendance API",
         "models": {
             "facenet": "loaded" if "facenet" in _model_cache else "not_loaded",
-            "mtcnn": "available" if MTCNN_AVAILABLE else "unavailable"
+            "mtcnn": "available" if MTCNN_AVAILABLE else "unavailable",
+            "liveness": "available" if liveness_available else "unavailable"
         },
         "mongodb": "connected" if MONGODB_AVAILABLE else "unavailable"
     }), 200
+
+
+@app.route('/api/v1/liveness-check', methods=['POST'])
+@require_api_key
+def liveness_check():
+    """
+    Check if a face is real (live) or fake (spoofed).
+    Uses MiniFAS anti-spoofing models.
+    
+    Request:
+    {
+        "image_base64": "...",  # Base64 encoded image
+    }
+    
+    Response:
+    {
+        "is_real": true/false,
+        "score": 0.95,  # Confidence score (0-1)
+        "label": "Real" or "Fake",
+        "face_detected": true/false,
+        "bbox": [x, y, width, height] or null
+    }
+    """
+    try:
+        data = request.json
+        image_base64 = data.get("image_base64")
+        
+        if not image_base64:
+            return jsonify({"error": "Missing image"}), 400
+        
+        # Decode image
+        image_bytes = base64.b64decode(image_base64)
+        arr = np.frombuffer(image_bytes, dtype=np.uint8)
+        img_bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        
+        if img_bgr is None:
+            return jsonify({"error": "Failed to decode image"}), 400
+        
+        img_rgb = img_bgr[..., ::-1]  # BGR to RGB
+        
+        # Run liveness detection
+        detector = get_liveness_detector()
+        result = detector.check_liveness(img_rgb)
+        
+        return jsonify(result), 200
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route('/api/v1/detect-face', methods=['POST'])

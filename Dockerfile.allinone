@@ -43,6 +43,9 @@ RUN pip3 install --upgrade pip setuptools wheel
 COPY requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt
 
+# Install PyTorch for liveness detection (CPU version to keep image smaller)
+RUN pip3 install --no-cache-dir torch torchvision --index-url https://download.pytorch.org/whl/cpu
+
 # Copy backend files
 COPY api_server.py .
 COPY fr_utils.py .
@@ -51,6 +54,9 @@ COPY inception_blocks_v2.py .
 COPY mlflow_utils.py .
 COPY nn4.small2.v7.h5 .
 COPY weights/ ./weights/
+
+# Copy liveness detection models and source
+COPY Face_liveness_detection_static/ ./Face_liveness_detection_static/
 
 # Copy frontend and install dependencies
 COPY face-attend-main/ ./frontend/

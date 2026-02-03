@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { DashboardLayout } from '@/components/dashboard/DashboardLayout';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { Camera, CheckCircle, Loader2, XCircle, RefreshCw, Scan, Sparkles, Shield, AlertTriangle, Lightbulb } from 'lucide-react';
+import { Camera, CheckCircle, Loader2, XCircle, RefreshCw, Scan, Sparkles, Shield, AlertTriangle, Lightbulb, Eye, EyeOff } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { faceAPI } from '@/lib/face-api';
 
@@ -24,6 +24,13 @@ interface VerificationResult {
   face_confidence?: number;
 }
 
+interface LivenessResult {
+  is_real: boolean;
+  score: number;
+  label: 'Real' | 'Fake' | 'No Face';
+  face_detected: boolean;
+}
+
 export default function MarkAttendance() {
   const { toast } = useToast();
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -36,9 +43,14 @@ export default function MarkAttendance() {
   const [detectedFaces, setDetectedFaces] = useState<DetectedFace[]>([]);
   const [isDetecting, setIsDetecting] = useState(false);
   const detectionIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // Liveness detection state
+  const [livenessResult, setLivenessResult] = useState<LivenessResult | null>(null);
+  const [isCheckingLiveness, setIsCheckingLiveness] = useState(false);
+  const livenessIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Draw face detection boxes on overlay canvas
-  const drawFaceBoxes = useCallback((faces: DetectedFace[], videoWidth: number, videoHeight: number) => {
+  const drawFaceBoxes = useCallback((faces: DetectedFace[], videoWidth: number, videoHeight: number, liveness?: LivenessResult | null) => {
     const canvas = overlayCanvasRef.current;
     if (!canvas) return;
 
@@ -57,12 +69,42 @@ export default function MarkAttendance() {
       const identity = face.identity;
       const matchConfidence = face.match_confidence || 0;
 
-      // Green for identified, yellow for unknown
+      // Determine colors based on liveness and identity
       const isIdentified = identity && matchConfidence > 0;
-      const boxColor = isIdentified ? '#00ff00' : '#ffcc00';
-      const labelBgColor = isIdentified ? 'rgba(0, 255, 0, 0.9)' : 'rgba(255, 204, 0, 0.9)';
+      const isLive = liveness?.is_real === true;
+      const isFake = liveness?.is_real === false && liveness?.face_detected;
+      
+      let boxColor: string;
+      let labelBgColor: string;
+      
+      if (isFake) {
+        // Red for fake/spoof
+        boxColor = '#ff0000';
+        labelBgColor = 'rgba(255, 0, 0, 0.9)';
+      } else if (isLive && isIdentified) {
+        // Green for live + identified
+        boxColor = '#00ff00';
+        labelBgColor = 'rgba(0, 255, 0, 0.9)';
+      } else if (isLive) {
+        // Cyan for live but not identified
+        boxColor = '#00ffcc';
+        labelBgColor = 'rgba(0, 255, 204, 0.9)';
+      } else {
+        // Yellow for unknown liveness
+        boxColor = '#ffcc00';
+        labelBgColor = 'rgba(255, 204, 0, 0.9)';
+      }
 
-      // Draw rounded rectangle border
+      // Draw rounded rectangle border with glow effect for liveness
+      ctx.save();
+      if (isLive) {
+        ctx.shadowColor = '#00ff00';
+        ctx.shadowBlur = 15;
+      } else if (isFake) {
+        ctx.shadowColor = '#ff0000';
+        ctx.shadowBlur = 20;
+      }
+      
       ctx.strokeStyle = boxColor;
       ctx.lineWidth = 3;
       ctx.beginPath();
@@ -78,15 +120,18 @@ export default function MarkAttendance() {
       ctx.quadraticCurveTo(x, y, x + radius, y);
       ctx.closePath();
       ctx.stroke();
+      ctx.restore();
 
-      // Create label text - show distance instead of confidence
+      // Create label text
       let label: string;
-      if (isIdentified) {
-        // matchConfidence is actually (1 - distance), so distance = 1 - matchConfidence
+      if (isFake) {
+        label = `⚠️ FAKE FACE DETECTED (${(liveness?.score || 0).toFixed(2)})`;
+      } else if (isIdentified) {
         const distance = 1 - matchConfidence;
-        label = `Welcome, ${identity}! (dist: ${distance.toFixed(3)})`;
+        const livenessText = isLive ? '✓ LIVE' : '';
+        label = `${livenessText} ${identity} (dist: ${distance.toFixed(3)})`;
       } else {
-        label = 'Unknown Face';
+        label = isLive ? '✓ Live - Unknown Face' : 'Unknown Face';
       }
 
       ctx.font = 'bold 14px Arial';
@@ -102,12 +147,12 @@ export default function MarkAttendance() {
       ctx.fill();
 
       // Label text
-      ctx.fillStyle = '#000000';
+      ctx.fillStyle = isFake ? '#ffffff' : '#000000';
       ctx.fillText(label, labelX + 8, Math.max(17, labelY + 19));
 
       // Draw keypoints if available
       if (face.keypoints) {
-        ctx.fillStyle = '#00ffff';
+        ctx.fillStyle = isLive ? '#00ffff' : (isFake ? '#ff6666' : '#ffff00');
         Object.values(face.keypoints).forEach(([px, py]) => {
           ctx.beginPath();
           ctx.arc(px, py, 3, 0, 2 * Math.PI);
@@ -116,6 +161,37 @@ export default function MarkAttendance() {
       }
     });
   }, []);
+
+  // Run liveness detection
+  const runLivenessCheck = useCallback(async () => {
+    if (!videoRef.current || !canvasRef.current || isVerifying) return;
+
+    const video = videoRef.current;
+    const canvas = canvasRef.current;
+
+    if (video.readyState < 2 || video.videoWidth === 0) return;
+
+    try {
+      setIsCheckingLiveness(true);
+
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+
+      ctx.drawImage(video, 0, 0);
+      const imageDataUrl = canvas.toDataURL('image/jpeg', 0.7);
+      const imageBase64 = imageDataUrl.split(',')[1];
+
+      // Call liveness API
+      const result = await faceAPI.checkLiveness(imageBase64);
+      setLivenessResult(result);
+    } catch (error) {
+      console.debug('Liveness check error:', error);
+    } finally {
+      setIsCheckingLiveness(false);
+    }
+  }, [isVerifying]);
 
   // Run face detection periodically
   const runFaceDetection = useCallback(async () => {
@@ -140,14 +216,22 @@ export default function MarkAttendance() {
       const imageDataUrl = canvas.toDataURL('image/jpeg', 0.7);
       const imageBase64 = imageDataUrl.split(',')[1];
 
-      // Call detection API
-      const result = await faceAPI.detectFace(imageBase64, 0.90);
+      // Call detection API and liveness API in parallel
+      const [detectionResult, livenessResultData] = await Promise.all([
+        faceAPI.detectFace(imageBase64, 0.90),
+        faceAPI.checkLiveness(imageBase64).catch(() => null)
+      ]);
 
-      if (result.faces && result.faces.length > 0) {
-        setDetectedFaces(result.faces);
-        drawFaceBoxes(result.faces, video.videoWidth, video.videoHeight);
+      if (livenessResultData) {
+        setLivenessResult(livenessResultData);
+      }
+
+      if (detectionResult.faces && detectionResult.faces.length > 0) {
+        setDetectedFaces(detectionResult.faces);
+        drawFaceBoxes(detectionResult.faces, video.videoWidth, video.videoHeight, livenessResultData);
       } else {
         setDetectedFaces([]);
+        setLivenessResult(null);
         // Clear overlay
         const overlayCanvas = overlayCanvasRef.current;
         if (overlayCanvas) {
@@ -213,14 +297,8 @@ export default function MarkAttendance() {
       setStream(null);
     }
     setDetectedFaces([]);
+    setLivenessResult(null);
   }, [stream]);
-
-  const reset = useCallback(() => {
-    setResult(null);
-    setIsMarked(false);
-    setDetectedFaces([]);
-    startCamera();
-  }, [startCamera]);
 
   const verifyAndMark = useCallback(async () => {
     if (!videoRef.current || !canvasRef.current) return;
@@ -245,7 +323,38 @@ export default function MarkAttendance() {
       const imageDataUrl = canvas.toDataURL('image/jpeg', 0.8);
       const imageBase64 = imageDataUrl.split(',')[1];
 
-      // Send to backend for verification
+      // First check liveness
+      const livenessCheck = await faceAPI.checkLiveness(imageBase64);
+      
+      if (!livenessCheck.face_detected) {
+        toast({
+          variant: 'destructive',
+          title: 'No Face Detected',
+          description: 'Please ensure your face is clearly visible in the camera.',
+        });
+        // Restart detection
+        detectionIntervalRef.current = setInterval(() => {
+          runFaceDetection();
+        }, 500);
+        setIsVerifying(false);
+        return;
+      }
+      
+      if (!livenessCheck.is_real) {
+        toast({
+          variant: 'destructive',
+          title: '⚠️ Spoof Detected!',
+          description: `Anti-spoofing check failed. Score: ${livenessCheck.score.toFixed(2)}. Please use a real face, not a photo or screen.`,
+        });
+        // Restart detection
+        detectionIntervalRef.current = setInterval(() => {
+          runFaceDetection();
+        }, 500);
+        setIsVerifying(false);
+        return;
+      }
+
+      // Liveness passed - now verify identity
       const verifyResult = await faceAPI.verifyFace(imageBase64, 0.6, true);
 
       setResult({
@@ -267,12 +376,12 @@ export default function MarkAttendance() {
         setIsMarked(true);
         stopCamera();
         toast({
-          title: 'Attendance Marked!',
-          description: `Welcome, ${verifyResult.identity}! Your attendance has been recorded.`,
+          title: '✓ Attendance Marked!',
+          description: `Welcome, ${verifyResult.identity}! Liveness verified. Your attendance has been recorded.`,
         });
       } else {
         const message = verifyResult.face_detected
-          ? `Face detected but not recognized. Distance: ${verifyResult.distance?.toFixed(3) || 'N/A'}`
+          ? `Live face detected but not recognized. Distance: ${verifyResult.distance?.toFixed(3) || 'N/A'}`
           : 'No face detected. Please ensure your face is visible and well-lit.';
         toast({
           variant: 'destructive',
@@ -299,6 +408,15 @@ export default function MarkAttendance() {
       setIsVerifying(false);
     }
   }, [stopCamera, toast, runFaceDetection]);
+
+  // Reset function should also clear liveness
+  const handleReset = useCallback(() => {
+    setResult(null);
+    setIsMarked(false);
+    setDetectedFaces([]);
+    setLivenessResult(null);
+    startCamera();
+  }, [startCamera]);
 
   return (
     <DashboardLayout>
@@ -415,7 +533,7 @@ export default function MarkAttendance() {
                     </span>
                   </div>
                   <div className="block">
-                    <Button onClick={reset} variant="heroOutline" size="lg" className="group">
+                    <Button onClick={handleReset} variant="heroOutline" size="lg" className="group">
                       <RefreshCw className="w-4 h-4 mr-2 group-hover:rotate-180 transition-transform duration-500" />
                       Mark Another
                     </Button>
@@ -464,7 +582,7 @@ export default function MarkAttendance() {
                   </div>
                 )}
                 <div className="flex gap-3 justify-center">
-                  <Button onClick={reset} variant="heroOutline" size="lg">
+                  <Button onClick={handleReset} variant="heroOutline" size="lg">
                     <RefreshCw className="w-4 h-4 mr-2" />
                     Try Again
                   </Button>
@@ -541,10 +659,51 @@ export default function MarkAttendance() {
                 {/* Detection status */}
                 {stream && (
                   <motion.div 
-                    className="flex items-center justify-center gap-3 mt-4"
+                    className="flex flex-col items-center gap-3 mt-4"
                     initial={{ opacity: 0 }}
                     animate={{ opacity: 1 }}
                   >
+                    {/* Liveness Status Indicator */}
+                    <div className={`flex items-center gap-2 px-4 py-2 rounded-full border ${
+                      livenessResult?.is_real 
+                        ? 'bg-emerald-500/10 border-emerald-500/30' 
+                        : livenessResult?.face_detected && !livenessResult?.is_real
+                          ? 'bg-red-500/10 border-red-500/30 animate-pulse' 
+                          : isCheckingLiveness
+                            ? 'bg-blue-500/10 border-blue-500/30'
+                            : 'bg-gray-500/10 border-gray-500/30'
+                    }`}>
+                      {livenessResult?.is_real ? (
+                        <Eye className="w-4 h-4 text-emerald-400" />
+                      ) : livenessResult?.face_detected ? (
+                        <EyeOff className="w-4 h-4 text-red-400" />
+                      ) : isCheckingLiveness ? (
+                        <Shield className="w-4 h-4 text-blue-400 animate-spin" />
+                      ) : (
+                        <Shield className="w-4 h-4 text-gray-400" />
+                      )}
+                      <span className={`text-sm font-medium ${
+                        livenessResult?.is_real 
+                          ? 'text-emerald-400' 
+                          : livenessResult?.face_detected && !livenessResult?.is_real
+                            ? 'text-red-400' 
+                            : isCheckingLiveness
+                              ? 'text-blue-400'
+                              : 'text-gray-400'
+                      }`}>
+                        {livenessResult?.is_real 
+                          ? `✓ LIVE FACE (${(livenessResult.score * 100).toFixed(0)}%)` 
+                          : livenessResult?.face_detected && !livenessResult?.is_real
+                            ? `⚠️ SPOOF DETECTED (${(livenessResult.score * 100).toFixed(0)}%)`
+                            : isCheckingLiveness
+                              ? 'Checking liveness...'
+                              : livenessResult && !livenessResult.face_detected
+                                ? 'No face detected for liveness'
+                                : 'Waiting for face...'}
+                      </span>
+                    </div>
+
+                    {/* Face Detection Status */}
                     <div className={`flex items-center gap-2 px-4 py-2 rounded-full border ${
                       detectedFaces.length > 0 && detectedFaces[0]?.identity 
                         ? 'bg-emerald-500/10 border-emerald-500/30' 

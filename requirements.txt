@@ -18,3 +18,11 @@ python-dotenv==1.0.0
 ray>=2.8.0
 ray[serve]>=2.8.0
 fastapi[standard]
+easydict
+numpy
+tqdm
+torchvision
+torch
+opencv_python
+Pillow
+tensorboardX

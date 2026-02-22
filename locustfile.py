@@ -12,8 +12,6 @@ Environment variables:
     BACKEND_HOST=http://localhost:5001
     ADMIN_EMAIL=admin@gmail.com
     ADMIN_PASSWORD=123456
-    TEACHER_EMAIL=teacher@gmail.com
-    TEACHER_PASSWORD=123456
 """
 
 import os
@@ -29,14 +27,14 @@ BACKEND_HOST = os.getenv("BACKEND_HOST", "http://localhost:5001")
 
 ADMIN_EMAIL = os.getenv("ADMIN_EMAIL", "admin@gmail.com")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "123456")
-TEACHER_EMAIL = os.getenv("TEACHER_EMAIL", "teacher@gmail.com")
-TEACHER_PASSWORD = os.getenv("TEACHER_PASSWORD", "123456")
 
 
 def _extract_asset_paths(html: str) -> List[str]:
     """Extract /assets/* paths from HTML (Vite build)."""
     return list(set(re.findall(r"/assets/[^\"'\s>]+", html)))
 
+
+# ==================== FRONTEND USER ====================
 
 class FrontendUser(HttpUser):
     """Simulates users accessing the React frontend."""
@@ -46,20 +44,19 @@ class FrontendUser(HttpUser):
 
     def on_start(self):
         self.asset_paths: List[str] = []
-        with self.client.get("/", catch_response=True, name="/ (initial load)") as response:
-            if response.status_code == 200:
-                self.asset_paths = _extract_asset_paths(response.text)
-                response.success()
-            else:
-                response.failure(f"Status code: {response.status_code}")
+        try:
+            with self.client.get("/", catch_response=True, name="/ (initial load)") as resp:
+                if resp.status_code == 200:
+                    self.asset_paths = _extract_asset_paths(resp.text)
+                    resp.success()
+                else:
+                    resp.failure(f"Status {resp.status_code}")
+        except Exception:
+            pass
 
     @task(10)
     def load_home(self):
-        with self.client.get("/", catch_response=True, name="/ (home)") as response:
-            if response.status_code == 200:
-                response.success()
-            else:
-                response.failure(f"Status code: {response.status_code}")
+        self.client.get("/", name="/ (home)")
 
     @task(5)
     def load_assets(self):
@@ -74,6 +71,8 @@ class FrontendUser(HttpUser):
         time.sleep(random.uniform(0.5, 2.0))
 
 
+# ==================== BACKEND USER ====================
+
 class BackendUser(HttpUser):
     """Simulates users calling backend API endpoints."""
 
@@ -82,77 +81,97 @@ class BackendUser(HttpUser):
 
     def on_start(self):
         self.user_id: Optional[str] = None
-        self._login_admin()
+        self._login()
 
-    def _login_admin(self):
-        payload = {"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}
-        with self.client.post("/api/v1/auth/login", json=payload, name="POST /api/v1/auth/login") as response:
-            if response.status_code == 200:
-                data = response.json()
-                self.user_id = data.get("user", {}).get("id")
-                response.success()
-            else:
-                response.failure(f"Login failed: {response.status_code}")
+    def _login(self):
+        """Login as admin. Gracefully handles failures."""
+        try:
+            payload = {"email": ADMIN_EMAIL, "password": ADMIN_PASSWORD}
+            with self.client.post(
+                "/api/v1/auth/login",
+                json=payload,
+                catch_response=True,
+                name="POST /api/v1/auth/login",
+            ) as resp:
+                if resp.status_code == 200:
+                    data = resp.json()
+                    self.user_id = data.get("user", {}).get("id")
+                    resp.success()
+                else:
+                    resp.failure(f"Login failed ({resp.status_code}): {resp.text[:200]}")
+        except Exception as e:
+            print(f"Login exception: {e}")
 
+    # ---------- health ----------
     @task(8)
     def health_check(self):
         self.client.get("/health", name="GET /health")
 
+    # ---------- admin lists ----------
     @task(6)
     def list_majors(self):
-        self.client.get("/api/v1/admin/majors", name="GET /api/v1/admin/majors")
+        self.client.get("/api/v1/admin/majors", name="GET /admin/majors")
 
     @task(6)
     def list_subjects(self):
-        self.client.get("/api/v1/admin/subjects", name="GET /api/v1/admin/subjects")
+        self.client.get("/api/v1/admin/subjects", name="GET /admin/subjects")
 
     @task(4)
     def list_teachers(self):
-        self.client.get("/api/v1/admin/teachers", name="GET /api/v1/admin/teachers")
+        self.client.get("/api/v1/admin/teachers", name="GET /admin/teachers")
 
     @task(4)
     def list_students(self):
-        self.client.get("/api/v1/admin/students", name="GET /api/v1/admin/students")
+        self.client.get("/api/v1/admin/students", name="GET /admin/students")
 
+    # ---------- attendance ----------
     @task(4)
     def attendance_recent(self):
-        self.client.get("/api/v1/attendance/recent", name="GET /api/v1/attendance/recent")
+        self.client.get("/api/v1/attendance/recent", name="GET /attendance/recent")
 
     @task(3)
     def attendance_stats(self):
-        self.client.get("/api/v1/teacher/attendance/stats", name="GET /api/v1/teacher/attendance/stats")
+        self.client.get("/api/v1/teacher/attendance/stats", name="GET /attendance/stats")
 
+    # ---------- faces ----------
     @task(2)
     def list_faces(self):
-        self.client.get("/api/v1/faces/list", name="GET /api/v1/faces/list")
+        self.client.get("/api/v1/faces/list", name="GET /faces/list")
 
+    # ---------- user profile ----------
     @task(2)
     def get_user_profile(self):
         if not self.user_id:
             return
-        self.client.get(f"/api/v1/auth/user/{self.user_id}", name="GET /api/v1/auth/user/:id")
+        self.client.get(
+            f"/api/v1/auth/user/{self.user_id}",
+            name="GET /auth/user/:id",
+        )
 
+
+# ==================== EVENT HOOKS ====================
 
 @events.request.add_listener
 def on_request(request_type, name, response_time, response_length, response, context, exception, **kwargs):
-    if response_time > 5000:
-        print(f"SLOW REQUEST: {name} took {response_time}ms")
+    if response_time and response_time > 5000:
+        print(f"⚠️  SLOW REQUEST: {name} took {response_time:.0f}ms")
 
 
 @events.test_start.add_listener
 def on_test_start(environment, **kwargs):
     print("=" * 60)
-    print("Starting Face Attendance Load Test")
+    print("  Starting Face Attendance Load Test")
     print("=" * 60)
-    print(f"Frontend host: {FRONTEND_HOST}")
-    print(f"Backend host: {BACKEND_HOST}")
+    print(f"  Frontend : {FRONTEND_HOST}")
+    print(f"  Backend  : {BACKEND_HOST}")
+    print(f"  Admin    : {ADMIN_EMAIL}")
     print("=" * 60)
 
 
 @events.test_stop.add_listener
 def on_test_stop(environment, **kwargs):
     print("=" * 60)
-    print("Load Test Complete")
+    print("  Load Test Complete")
     print("=" * 60)
 
 
